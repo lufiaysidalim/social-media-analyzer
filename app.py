@@ -125,38 +125,37 @@ def filter_by_time_range(df, filter_time, start_date=None, end_date=None):
 
 def scrape_instagram(client, keyword, scrape_limit):
     """
-    Fungsi scraping Instagram yang dioptimalkan untuk menarik ratusan/ribuan data.
+    Menggunakan actor utama instagram-scraper agar support limit besar (ratusan/ribuan data).
     """
     results = []
     clean_kw = keyword.replace("#", "").replace("@", "").strip()
 
     try:
         if keyword.startswith("@"):
-            # Scraping Profil Spesifik
+            # Target Profil Akun
             run_input = {
                 "directUrls": [f"https://www.instagram.com/{clean_kw}/"],
                 "resultsType": "posts",
                 "resultsLimit": scrape_limit
             }
-            actor_name = "apify/instagram-scraper"
         elif keyword.startswith("#"):
-            # Scraping Hashtag Spesifik menggunakan Actor Hashtag khusus
+            # Target Hashtag menggunakan Instagram Scraper Utama (Bukan hashtag-scraper)
             run_input = {
-                "hashtags": [clean_kw],
+                "directUrls": [f"https://www.instagram.com/explore/tags/{clean_kw}/"],
                 "resultsType": "posts",
                 "resultsLimit": scrape_limit
             }
-            actor_name = "apify/instagram-hashtag-scraper"
         else:
-            # Pencarian Kata Kunci / Topik Bebas (Gunakan search query pada instagram-scraper)
+            # Target Keyword Bebas
             run_input = {
                 "search": clean_kw,
                 "searchType": "hashtag",
                 "resultsType": "posts",
                 "resultsLimit": scrape_limit
             }
-            actor_name = "apify/instagram-scraper"
 
+        # Menggunakan Actor Utama yang jauh lebih stabil untuk data besar
+        actor_name = "apify/instagram-scraper"
         run = client.actor(actor_name).call(run_input=run_input)
         dataset_id = get_dataset_id(run)
 
