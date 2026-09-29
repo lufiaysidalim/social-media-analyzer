@@ -29,7 +29,7 @@ st.info("💡 **Tips Input:** Gunakan `@` untuk Akun (contoh: @jokowi), `#` untu
 col1, col2, col3 = st.columns(3)
 
 with col1:
-    platforms = st.multiselect("Platform:", ["FB", "IG", "TikTok", "X"], default=["IG"])
+    platforms = st.multiselect("Platform:", ["Facebook", "Instagram", "TikTok", "X(Twitter)"], default=["Instagram"])
 
 with col2:
     max_items = st.selectbox("Jumlah Postingan:", [10, 20, 50, 100, 500, 1000], index=0)
@@ -79,7 +79,7 @@ def scrape_instagram(client, keyword, max_items):
         
         for item in dataset_items:
             results.append({
-                "Platform": "IG",
+                "Platform": "Instagram",
                 "Author": item.get("ownerUsername") or item.get("owner", {}).get("username") or clean_kw,
                 "Content": item.get("caption") or "",
                 "Likes": item.get("likesCount", 0),
@@ -89,7 +89,7 @@ def scrape_instagram(client, keyword, max_items):
                 "Timestamp": item.get("timestamp") or item.get("takenAt") or str(datetime.now())
             })
     except Exception as e:
-        st.warning(f"Kendala pada platform IG: {str(e)}")
+        st.warning(f"Kendala pada platform Instagram: {str(e)}")
     return results
 
 def scrape_tiktok(client, keyword, max_items):
@@ -138,7 +138,7 @@ def scrape_twitter(client, keyword, max_items):
         
         for item in dataset_items:
             results.append({
-                "Platform": "X",
+                "Platform": "X(Twitter)",
                 "Author": item.get("author", {}).get("userName") or "N/A",
                 "Content": item.get("full_text") or item.get("text") or "",
                 "Likes": item.get("likeCount", 0),
@@ -148,7 +148,7 @@ def scrape_twitter(client, keyword, max_items):
                 "Timestamp": item.get("createdAt") or str(datetime.now())
             })
     except Exception as e:
-        st.warning(f"Kendala pada platform X: {str(e)}")
+        st.warning(f"Kendala pada platform X(Twitter): {str(e)}")
     return results
 
 def scrape_facebook(client, keyword, max_items):
@@ -171,7 +171,7 @@ def scrape_facebook(client, keyword, max_items):
         
         for item in dataset_items:
             results.append({
-                "Platform": "FB",
+                "Platform": "Facebook",
                 "Author": item.get("user", {}).get("name") or "N/A",
                 "Content": item.get("text") or "",
                 "Likes": item.get("likes", 0),
@@ -181,7 +181,7 @@ def scrape_facebook(client, keyword, max_items):
                 "Timestamp": item.get("time") or str(datetime.now())
             })
     except Exception as e:
-        st.warning(f"Kendala pada platform FB: {str(e)}")
+        st.warning(f"Kendala pada platform Facebook: {str(e)}")
     return results
 
 
