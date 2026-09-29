@@ -21,11 +21,11 @@ st.caption("Sistem Analisis Media Sosial Profesional bertenaga Apify API.")
 # 2. FORM INPUT UTAMA
 # ==========================================
 
-# BARIS 1: Input Tema / Hashtag / Nama Akun
+# KOLOM ATAS: Input Tema / Hashtag / Nama Akun
 keyword = st.text_input("Tema / Hashtag / Nama Akun:", value="metrologi")
 st.info("💡 **Tips Input:** Gunakan `@` untuk Akun (contoh: @jokowi), `#` untuk Hashtag (contoh: #metrologi), atau ketik langsung untuk Topik (contoh: metrologi).")
 
-# BARIS 2: Filter Platform, Jumlah Postingan, Rentang Waktu
+# KOLOM KEDUA: Filter (Platform, Jumlah Postingan, Rentang Waktu)
 col1, col2, col3 = st.columns(3)
 
 with col1:
@@ -35,7 +35,11 @@ with col2:
     max_items = st.selectbox("Jumlah Postingan:", [10, 20, 50, 100, 500, 1000], index=0)
 
 with col3:
-    filter_time = st.selectbox("Rentang Waktu:", ["1 Hari", "1 Bulan", "6 Bulan", "1 Tahun", "5 Tahun", "Custom"], index=1)
+    filter_time = st.selectbox(
+        "Rentang Waktu:", 
+        ["1 Hari", "1 Minggu", "1 Bulan", "3 Bulan", "6 Bulan", "1 Tahun", "5 Tahun", "Custom"], 
+        index=2
+    )
 
 # Kondisi jika memilih rentang waktu "Custom"
 if filter_time == "Custom":
@@ -45,11 +49,11 @@ if filter_time == "Custom":
     with col_date2:
         end_date = st.date_input("Waktu Range Akhir")
 
-# BARIS 3: Token API
-apify_token = st.text_input("Token (Apify API):", type="password")
+# KOLOM BAWAH: Token untuk Menjalankan Program
+program_token = st.text_input("Token Program:", type="password", placeholder="Masukkan token program...")
 
-# BARIS 4: Tombol Analisa
-btn_analyze = st.button("Analisa")
+# TOMBOL ANALISA DI BAWAHNYA
+btn_analyze = st.button("ANALISA")
 
 
 # ==========================================
@@ -62,17 +66,12 @@ def scrape_instagram(client, keyword, max_items):
     
     try:
         if keyword.startswith("@"):
-            # Analisa berdasar NAMA AKUN
             run_input = {"usernames": [clean_kw], "resultsLimit": int(max_items)}
             run = client.actor("apify/instagram-scraper").call(run_input=run_input)
-        
         elif keyword.startswith("#"):
-            # Analisa berdasar HASHTAG
             run_input = {"hashtags": [clean_kw], "resultsLimit": int(max_items)}
             run = client.actor("apify/instagram-hashtag-scraper").call(run_input=run_input)
-        
         else:
-            # Analisa berdasar TOPIK (Karena IG membatasi pencarian teks bebas, kita gunakan hashtag scraper sebagai representasi topik)
             run_input = {"hashtags": [clean_kw.replace(" ", "")], "resultsLimit": int(max_items)}
             run = client.actor("apify/instagram-hashtag-scraper").call(run_input=run_input)
 
@@ -161,7 +160,6 @@ def scrape_facebook(client, keyword, max_items):
         elif keyword.startswith("#"):
             start_url = f"https://www.facebook.com/hashtag/{clean_kw}"
         else:
-            # Pencarian berdasar Topik
             start_url = f"https://www.facebook.com/search/posts/?q={clean_kw.replace(' ', '%20')}"
 
         run_input = {
@@ -192,12 +190,14 @@ def scrape_facebook(client, keyword, max_items):
 # ==========================================
 
 if btn_analyze:
-    if not apify_token:
-        st.error("❌ Mohon isi Token terlebih dahulu!")
+    if program_token != "ANALYZER2026":
+        st.error("❌ Token Program salah! Masukkan token yang valid (ANALYZER2026).")
     elif not platforms:
         st.error("❌ Silakan pilih minimal satu platform media sosial!")
     else:
-        client = ApifyClient(apify_token)
+        # Token Apify permanen dari Streamlit Secrets
+        APIFY_PERMANENT_TOKEN = st.secrets["APIFY_API_TOKEN"]
+        client = ApifyClient(APIFY_PERMANENT_TOKEN)
         all_data = []
 
         status_box = st.status("🔍 Menganalisa data dari media sosial...", expanded=True)
