@@ -1,5 +1,6 @@
 apify-client
 streamlit
+plotly
 gspread
 google-api-python-client
 google-auth
