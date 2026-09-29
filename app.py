@@ -73,24 +73,21 @@ SESSION_FILE = "ig_session.json"
 
 def get_instagrapi_client():
     """
-    Inisialisasi instagrapi Client dengan Manajemen Sesi & Anti-Ban Delay.
+    Inisialisasi instagrapi Client dengan Auto-Reset Session untuk mengatasi Out of Date error.
     """
     cl = Client()
-    # Menambahkan jeda acak 2-5 detik antar request untuk meniru perilaku manusia
     cl.delay_range = [2, 5]
     
-    session_loaded = False
+    # Hapus file sesi lama jika ada, untuk memaksa instagrapi memakai parameter versi Instagram terbaru
     if os.path.exists(SESSION_FILE):
         try:
-            cl.load_settings(SESSION_FILE)
-            cl.login(IG_USERNAME, IG_PASSWORD)
-            session_loaded = True
+            os.remove(SESSION_FILE)
         except Exception:
-            session_loaded = False
+            pass
 
-    if not session_loaded:
-        cl.login(IG_USERNAME, IG_PASSWORD)
-        cl.dump_settings(SESSION_FILE)
+    # Login ulang dengan versi aplikasi ter-update
+    cl.login(IG_USERNAME, IG_PASSWORD)
+    cl.dump_settings(SESSION_FILE)
         
     return cl
 
