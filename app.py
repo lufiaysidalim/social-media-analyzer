@@ -14,7 +14,7 @@ from apify_client import ApifyClient
 st.set_page_config(
     page_title="Social Media Analyzer Pro",
     page_icon="📊",
-    layout="wide"
+    layout="centered"
 )
 
 # ==========================================
@@ -92,31 +92,41 @@ def get_apify_client():
     return ApifyClient(APIFY_TOKEN)
 
 def scrape_instagram(client, keyword, max_items):
-    clean_kw = keyword.replace("#", "").replace("@", "")
-    run_input = {
-        "hashtags": [clean_kw],
-        "resultsLimit": int(max_items),
-    }
-    run = client.actor("apify/instagram-post-scraper").call(run_input=run_input)
-    dataset = client.dataset(run["defaultDatasetId"])
-    
-    parsed = []
-    for item in dataset.iterate_items():
-        ts_str = item.get("timestamp", "")
-        parsed.append({
-            "Post ID": str(item.get("id", "")),
-            "Tanggal Publish": ts_str[:10] if ts_str else str(datetime.date.today()),
-            "Waktu Publish Full": ts_str or str(datetime.datetime.now()),
-            "Platform": "Instagram",
-            "Author / Username": f"@{item.get('ownerUsername', 'unknown')}",
-            "Konten / Teks": item.get("caption", "") or "",
-            "Jumlah Likes": int(item.get("likesCount", 0) or 0),
-            "Jumlah Comments": int(item.get("commentsCount", 0) or 0),
-            "Jumlah Shares": 0,
-            "Format Konten": "Foto / Reel" if "video" in str(item.get("type", "")).lower() else "Foto / Image",
-            "Hashtag Utama": keyword
-        })
-    return pd.DataFrame(parsed)
+  clean_kw = keyword.replace("#", "").replace("@", "").strip()
+
+  # Menyediakan parameter 'username' dan 'hashtags' sekaligus agar lolos validasi Apify
+  run_input = {
+      "username": [clean_kw],
+      "hashtags": [clean_kw],
+      "resultsLimit": int(max_items),
+  }
+
+  run = client.actor("apify/instagram-post-scraper").call(run_input=run_input)
+  dataset = client.dataset(run["defaultDatasetId"])
+
+  parsed = []
+  for item in dataset.iterate_items():
+    ts_str = item.get("timestamp", "")
+    parsed.append({
+        "Post ID": str(item.get("id", "")),
+        "Tanggal Publish": (
+            ts_str[:10] if ts_str else str(datetime.date.today())
+        ),
+        "Waktu Publish Full": ts_str or str(datetime.datetime.now()),
+        "Platform": "Instagram",
+        "Author / Username": f"@{item.get('ownerUsername', 'unknown')}",
+        "Konten / Teks": item.get("caption", "") or "",
+        "Jumlah Likes": int(item.get("likesCount", 0) or 0),
+        "Jumlah Comments": int(item.get("commentsCount", 0) or 0),
+        "Jumlah Shares": 0,
+        "Format Konten": (
+            "Foto / Reel"
+            if "video" in str(item.get("type", "")).lower()
+            else "Foto / Image"
+        ),
+        "Hashtag Utama": keyword,
+    })
+  return pd.DataFrame(parsed)
 
 def scrape_tiktok(client, keyword, max_items):
     clean_kw = keyword.replace("#", "").replace("@", "")
