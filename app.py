@@ -18,11 +18,12 @@ st.title("📊 Social Media Analyzer Pro")
 st.caption("Sistem Analisis Media Sosial Profesional bertenaga Apify API.")
 
 # ==========================================
-# 2. FORM INPUT UTAMA (4 BARIS SESUAI PERMINTAAN)
+# 2. FORM INPUT UTAMA
 # ==========================================
 
 # BARIS 1: Input Tema / Hashtag / Nama Akun
 keyword = st.text_input("Tema / Hashtag / Nama Akun:", value="metrologi")
+st.info("💡 **Tips Input:** Gunakan `@` untuk Akun (contoh: @jokowi), `#` untuk Hashtag (contoh: #metrologi), atau ketik langsung untuk Topik (contoh: metrologi).")
 
 # BARIS 2: Filter Platform, Jumlah Postingan, Rentang Waktu
 col1, col2, col3 = st.columns(3)
@@ -47,7 +48,7 @@ if filter_time == "Custom":
 # BARIS 3: Token API
 apify_token = st.text_input("Token (Apify API):", type="password")
 
-# BARIS 4: Tombol Analisa (Ukuran Kecil / Default)
+# BARIS 4: Tombol Analisa
 btn_analyze = st.button("Analisa")
 
 
@@ -58,42 +59,34 @@ btn_analyze = st.button("Analisa")
 def scrape_instagram(client, keyword, max_items):
     clean_kw = keyword.replace("#", "").replace("@", "").strip()
     results = []
-
-    if keyword.startswith("@"):
-        try:
-            run_input = {"username": [clean_kw], "resultsLimit": int(max_items)}
-            run = client.actor("apify/instagram-post-scraper").call(run_input=run_input)
-            dataset_items = client.dataset(run["defaultDatasetId"]).list_items().items
-            
-            for item in dataset_items:
-                results.append({
-                    "Platform": "IG",
-                    "Author": item.get("ownerUsername") or clean_kw,
-                    "Content": item.get("caption") or "",
-                    "Likes": item.get("likesCount", 0),
-                    "Comments": item.get("commentsCount", 0),
-                    "Shares/Views": item.get("videoViewCount") or item.get("videoPlayCount") or 0,
-                    "Url": item.get("url") or f"https://instagram.com/p/{item.get('shortCode', '')}",
-                    "Timestamp": item.get("timestamp") or str(datetime.now())
-                })
-            return results
-        except Exception as e:
-            st.warning(f"Metode Profile Scraper gagal: {str(e)}. Mengalihkan ke Hashtag Scraper...")
-
+    
     try:
-        run_input = {"hashtags": [clean_kw], "resultsLimit": int(max_items), "resultsType": "posts"}
-        run = client.actor("apify/instagram-hashtag-scraper").call(run_input=run_input)
+        if keyword.startswith("@"):
+            # Analisa berdasar NAMA AKUN
+            run_input = {"usernames": [clean_kw], "resultsLimit": int(max_items)}
+            run = client.actor("apify/instagram-scraper").call(run_input=run_input)
+        
+        elif keyword.startswith("#"):
+            # Analisa berdasar HASHTAG
+            run_input = {"hashtags": [clean_kw], "resultsLimit": int(max_items)}
+            run = client.actor("apify/instagram-hashtag-scraper").call(run_input=run_input)
+        
+        else:
+            # Analisa berdasar TOPIK (Karena IG membatasi pencarian teks bebas, kita gunakan hashtag scraper sebagai representasi topik)
+            run_input = {"hashtags": [clean_kw.replace(" ", "")], "resultsLimit": int(max_items)}
+            run = client.actor("apify/instagram-hashtag-scraper").call(run_input=run_input)
+
         dataset_items = client.dataset(run["defaultDatasetId"]).list_items().items
         
         for item in dataset_items:
             results.append({
                 "Platform": "IG",
-                "Author": item.get("ownerUsername") or item.get("owner", {}).get("username") or "N/A",
+                "Author": item.get("ownerUsername") or item.get("owner", {}).get("username") or clean_kw,
                 "Content": item.get("caption") or "",
                 "Likes": item.get("likesCount", 0),
                 "Comments": item.get("commentsCount", 0),
-                "Shares/Views": item.get("videoPlayCount") or item.get("playsCount") or 0,
-                "Url": item.get("url") or item.get("postUrl") or "",
+                "Shares/Views": item.get("videoViewCount") or item.get("videoPlayCount") or item.get("playsCount") or 0,
+                "Url": item.get("url") or item.get("postUrl") or f"https://instagram.com/p/{item.get('shortCode', '')}",
                 "Timestamp": item.get("timestamp") or item.get("takenAt") or str(datetime.now())
             })
     except Exception as e:
@@ -104,7 +97,13 @@ def scrape_tiktok(client, keyword, max_items):
     results = []
     clean_kw = keyword.replace("#", "").replace("@", "").strip()
     try:
-        run_input = {"hashtags": [clean_kw], "resultsPerPage": int(max_items)}
+        if keyword.startswith("@"):
+            run_input = {"profiles": [clean_kw], "resultsPerPage": int(max_items)}
+        elif keyword.startswith("#"):
+            run_input = {"hashtags": [clean_kw], "resultsPerPage": int(max_items)}
+        else:
+            run_input = {"searchQueries": [clean_kw], "resultsPerPage": int(max_items)}
+
         run = client.actor("clockworks/free-tiktok-scraper").call(run_input=run_input)
         dataset_items = client.dataset(run["defaultDatasetId"]).list_items().items
         
@@ -125,8 +124,16 @@ def scrape_tiktok(client, keyword, max_items):
 
 def scrape_twitter(client, keyword, max_items):
     results = []
+    clean_kw = keyword.replace("#", "").replace("@", "").strip()
     try:
-        run_input = {"searchTerms": [keyword], "maxItems": int(max_items)}
+        if keyword.startswith("@"):
+            search_query = f"from:{clean_kw}"
+        elif keyword.startswith("#"):
+            search_query = f"#{clean_kw}"
+        else:
+            search_query = clean_kw
+
+        run_input = {"searchTerms": [search_query], "maxItems": int(max_items)}
         run = client.actor("apify/twitter-scraper").call(run_input=run_input)
         dataset_items = client.dataset(run["defaultDatasetId"]).list_items().items
         
@@ -147,11 +154,18 @@ def scrape_twitter(client, keyword, max_items):
 
 def scrape_facebook(client, keyword, max_items):
     results = []
+    clean_kw = keyword.replace("#", "").replace("@", "").strip()
     try:
-        clean_kw = keyword.replace("#", "").replace("@", "").strip()
-        # Menggunakan format pencarian hashtag FB sebagai pendekatan umum
+        if keyword.startswith("@"):
+            start_url = f"https://www.facebook.com/{clean_kw}"
+        elif keyword.startswith("#"):
+            start_url = f"https://www.facebook.com/hashtag/{clean_kw}"
+        else:
+            # Pencarian berdasar Topik
+            start_url = f"https://www.facebook.com/search/posts/?q={clean_kw.replace(' ', '%20')}"
+
         run_input = {
-            "startUrls": [{"url": f"https://www.facebook.com/hashtag/{clean_kw}"}],
+            "startUrls": [{"url": start_url}],
             "resultsLimit": int(max_items)
         }
         run = client.actor("apify/facebook-posts-scraper").call(run_input=run_input)
@@ -262,7 +276,7 @@ if "scraped_data" in st.session_state:
         st.download_button(
             label="📄 Unduh Data sebagai CSV",
             data=csv_buffer,
-            file_name=f"analisa_sosmed_{keyword}.csv",
+            file_name=f"analisa_sosmed_{keyword.replace('@','').replace('#','')}.csv",
             mime="text/csv",
             use_container_width=True
         )
@@ -275,7 +289,7 @@ if "scraped_data" in st.session_state:
         st.download_button(
             label="📊 Unduh Data sebagai Excel (.xlsx)",
             data=excel_data,
-            file_name=f"analisa_sosmed_{keyword}.xlsx",
+            file_name=f"analisa_sosmed_{keyword.replace('@','').replace('#','')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True
         )
