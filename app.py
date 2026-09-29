@@ -12,19 +12,22 @@ import streamlit as st
 st.set_page_config(
     page_title="Social Media Analyzer",
     page_icon="📊",
-    layout="centered"  # Tampilan simpel & elegan di tengah
+    layout="centered"
 )
 
+# ==========================================
+# 2. VARIABEL & ID RAHASIA (TERSEMBUNYI DARI UI)
+# ==========================================
 MASTER_TOKEN = st.secrets.get("ACCESS_TOKEN", "ANALYZER2026")
+
+# ID diambil dari Secrets atau Default langsung di latar belakang
+MASTER_SHEET_ID = st.secrets.get("MASTER_SHEET_ID", "1VHYJQJqBVt-W95oqx5vCioMkIPJQEnJvef-X2XqJiko")
+TARGET_FOLDER_ID = st.secrets.get("FOLDER_ID", "1NW_-L0ZQYJ2YrsDJWe90UZbflQXZSk")
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
 ]
-
-# ID Default Master Sheet & Folder dari Drive Anda
-DEFAULT_MASTER_ID = "1VHYJQJqBVt-W95oqx5vCioMkIPJQEnJvef-X2XqJiko"
-DEFAULT_FOLDER_ID = st.secrets.get("FOLDER_ID", "1NW_-L0ZQYJ2YrsDJWe90UZbflQXZSk")
 
 
 def init_services():
@@ -150,25 +153,10 @@ def convert_df_to_excel(df_param, df_data):
 
 
 # ==========================================
-# 2. TAMPILAN FRONTEND STREAMLIT
+# 3. TAMPILAN FRONTEND STREAMLIT (BERSIH)
 # ==========================================
 st.title("📊 Social Media Analyzer")
 st.write("Masukkan parameter di bawah ini untuk memulai analisa:")
-
-# Input Master Sheet ID & Folder ID
-col_master1, col_master2 = st.columns(2)
-with col_master1:
-    master_sheet_id = st.text_input(
-        "ID Master Google Sheet:",
-        value=DEFAULT_MASTER_ID,
-        help="ID file Master Data Analisis Sosmed Anda"
-    )
-with col_master2:
-    target_folder_id = st.text_input(
-        "ID Folder Google Drive Tujuan:",
-        value=DEFAULT_FOLDER_ID,
-        help="ID Folder Analisis Media Sosial"
-    )
 
 # Input Parameter Analisis
 kata_kunci = st.text_input(
@@ -205,16 +193,14 @@ if rentang_waktu == "Custom":
 token_user = st.text_input(
     "Token Akses (Khusus Pengguna Berizin):",
     type="password",
-    help="Gunakan token akses sementara: ANALYZER2026",
+    help="Masukkan token akses Anda",
 )
 
 if st.button("🚀 ANALISA"):
     if not kata_kunci:
         st.warning("⚠️ Silakan masukkan Topik / Hashtag / Nama Akun terlebih dahulu.")
-    elif not master_sheet_id or not target_folder_id:
-        st.warning("⚠️ Masukkan ID Master Sheet dan ID Folder Drive.")
     elif token_user != MASTER_TOKEN and token_user != "":
-        st.error("❌ Token Akses salah! Gunakan token: ANALYZER2026")
+        st.error("❌ Token Akses salah! Gunakan token yang sesuai.")
     else:
         with st.spinner("Menduplikasi Master Sheet & mengisi data baru..."):
             try:
@@ -225,8 +211,8 @@ if st.button("🚀 ANALISA"):
                     date_range=rentang_waktu,
                     start_date=tgl_mulai,
                     end_date=tgl_selesai,
-                    master_id=master_sheet_id,
-                    folder_id=target_folder_id
+                    master_id=MASTER_SHEET_ID,
+                    folder_id=TARGET_FOLDER_ID
                 )
 
                 st.success(f"✅ Berhasil membuat file GSheet baru: **{filename}**!")
