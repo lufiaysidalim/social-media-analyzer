@@ -73,19 +73,27 @@ SESSION_FILE = "ig_session.json"
 
 def get_instagrapi_client():
     """
-    Inisialisasi instagrapi Client dengan Auto-Reset Session untuk mengatasi Out of Date error.
+    Inisialisasi instagrapi Client dengan User-Agent terbaru & pembersihan sesi lama.
     """
     cl = Client()
     cl.delay_range = [2, 5]
     
-    # Hapus file sesi lama jika ada, untuk memaksa instagrapi memakai parameter versi Instagram terbaru
+    # 1. Paksa hapus file sesi lama dari server jika masih ada
     if os.path.exists(SESSION_FILE):
         try:
             os.remove(SESSION_FILE)
         except Exception:
             pass
 
-    # Login ulang dengan versi aplikasi ter-update
+    # 2. Set User-Agent versi Instagram Android terbaru untuk melewati penolakan versi
+    try:
+        cl.set_user_agent(
+            "Instagram 317.0.0.34.109 Android (33/13; 420dpi; 1080x2400; Xiaomi; M2007J20CG; surya; qcom; id_ID; 568360662)"
+        )
+    except Exception:
+        pass
+
+    # 3. Login ulang & simpan sesi baru
     cl.login(IG_USERNAME, IG_PASSWORD)
     cl.dump_settings(SESSION_FILE)
         
