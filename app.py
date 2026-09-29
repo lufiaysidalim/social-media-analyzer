@@ -124,54 +124,50 @@ def filter_by_time_range(df, filter_time, start_date=None, end_date=None):
 # ==========================================
 
 def scrape_instagram(client, keyword, scrape_limit):
-    """
-    Menggunakan actor utama apify/instagram-scraper agar support limit besar (ratusan/ribuan data).
-    """
     results = []
     clean_kw = keyword.replace("#", "").replace("@", "").strip()
 
     try:
+        # Masukkan Instagram Session ID Anda di sini (opsional tapi wajib jika ingin >27 data dari hashtag)
+        # Cara ambil: Buka Instagram di browser -> Inspect Element -> Application -> Cookies -> salin nilai 'sessionid'
+        INSTAGRAM_SESSION_COOKIE = "22670525788%3Aptk7kAZNty1iqY%3A7%3AAYn5G0cMzEYDz8qcg7SkDCSOYClAxG3u0tvwT-BAbw" 
+
         if keyword.startswith("@"):
-            # Target Profil Akun
             run_input = {
                 "directUrls": [f"https://www.instagram.com/{clean_kw}/"],
                 "resultsType": "posts",
-                "resultsLimit": scrape_limit
+                "resultsLimit": scrape_limit,
+                "sessionCookie": INSTAGRAM_SESSION_COOKIE
             }
         elif keyword.startswith("#"):
-            # Target Hashtag menggunakan directUrl agar menembus batas limit halaman pertama
             run_input = {
                 "directUrls": [f"https://www.instagram.com/explore/tags/{clean_kw}/"],
                 "resultsType": "posts",
-                "resultsLimit": scrape_limit
+                "resultsLimit": scrape_limit,
+                "sessionCookie": INSTAGRAM_SESSION_COOKIE
             }
         else:
-            # Target Keyword / Topik Bebas
             run_input = {
                 "search": clean_kw,
                 "searchType": "hashtag",
                 "resultsType": "posts",
-                "resultsLimit": scrape_limit
+                "resultsLimit": scrape_limit,
+                "sessionCookie": INSTAGRAM_SESSION_COOKIE
             }
 
-        # Menggunakan Actor Utama Apify Instagram Scraper
         actor_name = "apify/instagram-scraper"
         run = client.actor(actor_name).call(run_input=run_input)
         dataset_id = get_dataset_id(run)
 
         for item in client.dataset(dataset_id).iterate_items():
+            # (proses mapping data seperti biasa...)
             author = item.get("ownerUsername") or item.get("owner", {}).get("username") or clean_kw
-            likes = item.get("likesCount") or item.get("likeCount") or item.get("like_count") or 0
-            comments = item.get("commentsCount") or item.get("commentCount") or item.get("comment_count") or 0
-            views = item.get("videoViewCount") or item.get("videoPlayCount") or item.get("playCount") or 0
-            caption = item.get("caption") or item.get("captionText") or item.get("text") or ""
-            
+            likes = item.get("likesCount") or item.get("likeCount") or 0
+            comments = item.get("commentsCount") or item.get("commentCount") or 0
+            views = item.get("videoViewCount") or item.get("videoPlayCount") or 0
+            caption = item.get("caption") or item.get("captionText") or ""
             url = item.get("url") or item.get("postUrl") or ""
-            if not url and item.get("shortCode"):
-                url = f"https://www.instagram.com/p/{item.get('shortCode')}/"
-
-            timestamp = item.get("timestamp") or item.get("takenAt") or str(datetime.now(timezone.utc))
-
+            
             results.append({
                 "Platform": "Instagram",
                 "Author": author,
@@ -182,7 +178,7 @@ def scrape_instagram(client, keyword, scrape_limit):
                 "Comments": comments,
                 "Shares/Views": views,
                 "Url": url,
-                "Timestamp": timestamp
+                "Timestamp": item.get("timestamp") or str(datetime.now(timezone.utc))
             })
     except Exception as e:
         st.warning(f"Kendala pada platform Instagram (Apify): {str(e)}")
