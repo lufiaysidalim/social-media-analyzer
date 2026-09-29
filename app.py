@@ -1,3 +1,4 @@
+import datetime
 import streamlit as st
 
 # Judul Utama
@@ -19,9 +20,13 @@ with col2:
 with col3:
     rentang_waktu = st.selectbox("Rentang Waktu:", ["1 Hari", "1 Minggu", "1 Bulan", "6 Bulan", "1 Tahun", "5 Tahun", "Custom"])
 
-# Tampilkan opsi tanggal jika memilih Custom
+# Tampilkan 2 input tanggal jika memilih Custom
 if rentang_waktu == "Custom":
-    st.date_input("Pilih Tanggal:")
+    col_tgl1, col_tgl2 = st.columns(2)
+    with col_tgl1:
+        tgl_mulai = st.date_input("Dari Tanggal:", value=datetime.date.today() - datetime.timedelta(days=7))
+    with col_tgl2:
+        tgl_selesai = st.date_input("Hingga Tanggal:", value=datetime.date.today())
 
 # 3. Input Token Akses
 token_user = st.text_input("Token Akses (Khusus Pengguna Berizin):", type="password")
