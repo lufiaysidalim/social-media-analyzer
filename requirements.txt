@@ -1,5 +1,6 @@
 apify-client
 streamlit
+instagrapi
 plotly
 gspread
 google-api-python-client
