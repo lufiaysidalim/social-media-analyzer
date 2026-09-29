@@ -124,12 +124,16 @@ def filter_by_time_range(df, filter_time, start_date=None, end_date=None):
 # ==========================================
 
 def scrape_instagram(client, keyword, scrape_limit):
+    """
+    Penarikan data Instagram menggunakan Apify Actor (Sudah Disesuaikan nilainya).
+    """
     results = []
     clean_kw = keyword.replace("#", "").replace("@", "").strip()
     safe_limit = min(scrape_limit, 500)
 
     try:
         if keyword.startswith("@"):
+            # Scraping berdasarkan Akun Profil
             run_input = {
                 "directUrls": [f"https://www.instagram.com/{clean_kw}/"],
                 "resultsType": "posts",
@@ -137,11 +141,11 @@ def scrape_instagram(client, keyword, scrape_limit):
             }
             actor_name = "apify/instagram-scraper"
         else:
-            # Gunakan instagram-scraper untuk pencarian hashtag dengan hasil Top Posts & pagination lebih baik
+            # Scraping berdasarkan Hashtag/Topik
             run_input = {
                 "hashtags": [clean_kw],
-                "resultsLimit": safe_limit,
-                "resultsType": "top"  # Mengambil postingan viral/engagement tinggi
+                "resultsType": "posts",  # Gunakan "posts" (bukan "top") agar tidak error
+                "resultsLimit": safe_limit
             }
             actor_name = "apify/instagram-hashtag-scraper"
 
@@ -176,6 +180,7 @@ def scrape_instagram(client, keyword, scrape_limit):
     except Exception as e:
         st.warning(f"Kendala pada platform Instagram (Apify): {str(e)}")
     return results
+
 
 def scrape_tiktok(client, keyword, scrape_limit):
     results = []
