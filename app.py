@@ -2,7 +2,6 @@ import datetime
 import io
 import gspread
 from google.oauth2.service_account import Credentials
-from googleapiclient.discovery import build
 import pandas as pd
 import streamlit as st
 
@@ -19,9 +18,7 @@ st.set_page_config(
 # 2. VARIABEL & ID RAHASIA (TERSEMBUNYI DARI UI)
 # ==========================================
 MASTER_TOKEN = st.secrets.get("ACCESS_TOKEN", "ANALYZER2026")
-
 MASTER_SHEET_ID = st.secrets.get("MASTER_SHEET_ID", "1VHYJQJqBVt-W95oqx5vCioMkIPJQEnJvef-X2XqJiko")
-TARGET_FOLDER_ID = st.secrets.get("FOLDER_ID", "1NW_-L0ZQYJ2YrsDJWe90UZbflQXZSk")
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -29,51 +26,27 @@ SCOPES = [
 ]
 
 
-def init_services():
-    """Inisialisasi koneksi GSpread & Google Drive API"""
+def init_gspread():
+    """Inisialisasi koneksi GSpread"""
     creds = Credentials.from_service_account_info(
         st.secrets["gcp_service_account"], scopes=SCOPES
     )
-    client = gspread.authorize(creds)
-    drive_service = build("drive", "v3", credentials=creds)
-    return client, drive_service
+    return gspread.authorize(creds)
 
 
-def create_new_gsheet(
-    topic, platforms, post_count, date_range, start_date, end_date, folder_id
+def update_master_gsheet(
+    topic, platforms, post_count, date_range, start_date, end_date, master_id
 ):
     """
-    1. Membuat File GSheet Baru via GSpread (Bebas Quota Limit Service Account)
-    2. Memindahkan file baru ke Folder Target di Drive
-    3. Mengisi data hasil analisa ke file tersebut
+    Mengisi data ke Master Google Sheet milik User (Tanpa terkena quota limit Service Account).
     """
-    client, drive_service = init_services()
+    client = init_gspread()
+    spreadsheet = client.open_by_key(master_id)
 
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     clean_topic = topic.replace(" ", "_").replace("#", "").replace("@", "")
-    new_filename = f"Data_Analisis_{clean_topic}_{timestamp}"
 
-    # 1. Buat Spreadsheet Baru via GSpread (Bebas Kuota Limit Drive)
-    spreadsheet = client.create(new_filename)
-    new_file_id = spreadsheet.id
-    new_sheet_url = spreadsheet.url
-
-    # 2. Pindahkan Spreadsheet Baru ke dalam Folder Target
-    if folder_id:
-        try:
-            file_meta = drive_service.files().get(fileId=new_file_id, fields="parents").execute()
-            previous_parents = ",".join(file_meta.get("parents", []))
-            
-            drive_service.files().update(
-                fileId=new_file_id,
-                addParents=folder_id,
-                removeParents=previous_parents,
-                fields="id, parents"
-            ).execute()
-        except Exception as e:
-            st.warning(f"File berhasil dibuat, tetapi gagal dipindahkan ke folder: {e}")
-
-    # 3. Buat Data Parameter & Data Mentah
+    # Buat Data Frame Parameter
     df_parameter = pd.DataFrame({
         "Parameter": [
             "Topik / Kata Kunci",
@@ -95,6 +68,7 @@ def create_new_gsheet(
         ],
     })
 
+    # Buat Data Frame Data Mentah
     df_data_mentah = pd.DataFrame({
         "Post ID": [f"POST_{i:04d}" for i in range(1, 21)],
         "Tanggal Publish": [
@@ -119,12 +93,13 @@ def create_new_gsheet(
         ] * 7,
     })
 
+    # Tulis data ke tab utama & buat tab histori baru
     dict_sheets = {
         "Parameter_Analisis": df_parameter,
         "Data_Mentah_Sosmed": df_data_mentah,
+        f"Data_{clean_topic}_{timestamp[:8]}": df_data_mentah  # Tab histori per topik & tanggal
     }
 
-    # 4. Tulis Data ke Worksheet dalam File Baru
     for sheet_name, df in dict_sheets.items():
         try:
             worksheet = spreadsheet.worksheet(sheet_name)
@@ -135,14 +110,7 @@ def create_new_gsheet(
             )
         worksheet.update([df.columns.values.tolist()] + df.values.tolist())
 
-    # Hapus tab default 'Sheet1' jika ada
-    try:
-        default_sheet = spreadsheet.worksheet("Sheet1")
-        spreadsheet.del_worksheet(default_sheet)
-    except Exception:
-        pass
-
-    return new_sheet_url, new_filename, df_parameter, df_data_mentah
+    return spreadsheet.url, df_parameter, df_data_mentah
 
 
 def convert_df_to_excel(df_param, df_data):
@@ -204,29 +172,31 @@ if st.button("🚀 ANALISA"):
     elif token_user != MASTER_TOKEN and token_user != "":
         st.error("❌ Token Akses salah! Gunakan token yang sesuai.")
     else:
-        with st.spinner("Membuat file GSheet baru & mengisi data..."):
+        with st.spinner("Memproses data & memperbarui Google Sheet..."):
             try:
-                sheet_url, filename, df_param, df_data = create_new_gsheet(
+                sheet_url, df_param, df_data = update_master_gsheet(
                     topic=kata_kunci,
                     platforms=medsos,
                     post_count=jumlah_post,
                     date_range=rentang_waktu,
                     start_date=tgl_mulai,
                     end_date=tgl_selesai,
-                    folder_id=TARGET_FOLDER_ID
+                    master_id=MASTER_SHEET_ID
                 )
 
-                st.success(f"✅ Berhasil membuat file GSheet baru: **{filename}**!")
+                st.success("✅ Berhasil memproses data dan memperbarui Master Google Sheet!")
 
-                st.markdown("### 📥 Akses & Unduh File Baru")
-                st.markdown(f"🔗 **[Buka File Google Sheet Baru di Drive]({sheet_url})**")
+                st.markdown("### 📥 Akses & Unduh Hasil")
+                st.markdown(f"🔗 **[Buka Master Google Sheet di Drive]({sheet_url})**")
 
-                # Tombol Download Excel Langsung
+                clean_topic = kata_kunci.replace(" ", "_").replace("#", "").replace("@", "")
+                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
                 excel_data = convert_df_to_excel(df_param, df_data)
+                
                 st.download_button(
-                    label="💾 Download File Excel (.xlsx)",
+                    label="💾 Download File Excel (.xlsx) Hasil Analisa",
                     data=excel_data,
-                    file_name=f"{filename}.xlsx",
+                    file_name=f"Data_Analisis_{clean_topic}_{timestamp}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
 
