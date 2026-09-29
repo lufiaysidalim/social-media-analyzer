@@ -38,7 +38,6 @@ with col3:
     filter_time = st.selectbox("Rentang Waktu:", filter_time_options, index=2)
 
 with col4:
-    # DEFAULT DINAIKKAN MENJADI 500.000 POSTINGAN
     raw_limit = st.number_input("Batas Tarik Raw Data:", min_value=1000, max_value=5000000, value=500000, step=50000)
 
 start_date, end_date = None, None
@@ -127,16 +126,17 @@ def scrape_instagram(client, keyword, scrape_limit):
             run_input = {"usernames": [clean_kw], "resultsLimit": scrape_limit}
             run = client.actor("apify/instagram-scraper").call(run_input=run_input)
         else:
+            # PERBAIKAN: resultsType diubah menjadi "posts" agar valid
             run_input = {
                 "hashtags": [clean_kw.replace(" ", "")], 
                 "resultsLimit": scrape_limit,
-                "resultsType": "top"  # Mengambil postingan populer/top engagement
+                "resultsType": "posts"
             }
             run = client.actor("apify/instagram-hashtag-scraper").call(run_input=run_input)
 
         dataset_id = get_dataset_id(run)
         
-        # PERBAIKAN: Gunakan iterate_items() untuk membaca seluruh ratusan ribu baris data tanpa terpotong limit 1000
+        # Menggunakan iterate_items() untuk membaca seluruh dataset
         for item in client.dataset(dataset_id).iterate_items():
             results.append({
                 "Platform": "Instagram",
@@ -168,7 +168,6 @@ def scrape_tiktok(client, keyword, scrape_limit):
         run = client.actor("clockworks/free-tiktok-scraper").call(run_input=run_input)
         dataset_id = get_dataset_id(run)
         
-        # PERBAIKAN: Iterate seluru item dataset
         for item in client.dataset(dataset_id).iterate_items():
             results.append({
                 "Platform": "TikTok",
