@@ -21,11 +21,9 @@ st.caption("Sistem Analisis Media Sosial Profesional bertenaga Apify API.")
 # 2. FORM INPUT UTAMA
 # ==========================================
 
-# KOLOM ATAS: Input Tema / Hashtag / Nama Akun
 keyword = st.text_input("Tema / Hashtag / Nama Akun:", value="metrologi")
 st.info("💡 **Tips Input:** Gunakan `@` untuk Akun (contoh: @jokowi), `#` untuk Hashtag (contoh: #metrologi), atau ketik langsung untuk Topik (contoh: metrologi).")
 
-# KOLOM KEDUA: Filter (Platform, Jumlah Postingan, Rentang Waktu)
 col1, col2, col3 = st.columns(3)
 
 with col1:
@@ -41,7 +39,6 @@ with col3:
         index=2
     )
 
-# Kondisi jika memilih rentang waktu "Custom"
 if filter_time == "Custom":
     col_date1, col_date2 = st.columns(2)
     with col_date1:
@@ -49,16 +46,19 @@ if filter_time == "Custom":
     with col_date2:
         end_date = st.date_input("Waktu Range Akhir")
 
-# KOLOM BAWAH: Token untuk Menjalankan Program
 program_token = st.text_input("Token Program:", type="password", placeholder="Masukkan token program...")
-
-# TOMBOL ANALISA DI BAWAHNYA
 btn_analyze = st.button("ANALISA")
 
 
 # ==========================================
-# 3. FUNGSI SCRAPER PER PLATFORM
+# 3. FUNGSI BANTUAN & SCRAPER PER PLATFORM
 # ==========================================
+
+def get_dataset_id(run):
+    """Fungsi aman untuk mengambil ID dataset dari objek/dictionary run Apify"""
+    if isinstance(run, dict):
+        return run.get("defaultDatasetId")
+    return getattr(run, "defaultDatasetId", getattr(run, "default_dataset_id", None))
 
 def scrape_instagram(client, keyword, max_items):
     clean_kw = keyword.replace("#", "").replace("@", "").strip()
@@ -75,7 +75,8 @@ def scrape_instagram(client, keyword, max_items):
             run_input = {"hashtags": [clean_kw.replace(" ", "")], "resultsLimit": int(max_items)}
             run = client.actor("apify/instagram-hashtag-scraper").call(run_input=run_input)
 
-        dataset_items = client.dataset(run["defaultDatasetId"]).list_items().items
+        dataset_id = get_dataset_id(run)
+        dataset_items = client.dataset(dataset_id).list_items().items
         
         for item in dataset_items:
             results.append({
@@ -104,7 +105,8 @@ def scrape_tiktok(client, keyword, max_items):
             run_input = {"searchQueries": [clean_kw], "resultsPerPage": int(max_items)}
 
         run = client.actor("clockworks/free-tiktok-scraper").call(run_input=run_input)
-        dataset_items = client.dataset(run["defaultDatasetId"]).list_items().items
+        dataset_id = get_dataset_id(run)
+        dataset_items = client.dataset(dataset_id).list_items().items
         
         for item in dataset_items:
             results.append({
@@ -134,7 +136,8 @@ def scrape_twitter(client, keyword, max_items):
 
         run_input = {"searchTerms": [search_query], "maxItems": int(max_items)}
         run = client.actor("apify/twitter-scraper").call(run_input=run_input)
-        dataset_items = client.dataset(run["defaultDatasetId"]).list_items().items
+        dataset_id = get_dataset_id(run)
+        dataset_items = client.dataset(dataset_id).list_items().items
         
         for item in dataset_items:
             results.append({
@@ -167,7 +170,8 @@ def scrape_facebook(client, keyword, max_items):
             "resultsLimit": int(max_items)
         }
         run = client.actor("apify/facebook-posts-scraper").call(run_input=run_input)
-        dataset_items = client.dataset(run["defaultDatasetId"]).list_items().items
+        dataset_id = get_dataset_id(run)
+        dataset_items = client.dataset(dataset_id).list_items().items
         
         for item in dataset_items:
             results.append({
@@ -195,7 +199,6 @@ if btn_analyze:
     elif not platforms:
         st.error("❌ Silakan pilih minimal satu platform media sosial!")
     else:
-        # Token Apify permanen dari Streamlit Secrets
         APIFY_PERMANENT_TOKEN = st.secrets["APIFY_API_TOKEN"]
         client = ApifyClient(APIFY_PERMANENT_TOKEN)
         all_data = []
@@ -204,13 +207,13 @@ if btn_analyze:
 
         for p in platforms:
             status_box.write(f"⏳ Mengambil data dari **{p}**...")
-            if p == "IG":
+            if p == "Instagram":
                 res = scrape_instagram(client, keyword, max_items)
             elif p == "TikTok":
                 res = scrape_tiktok(client, keyword, max_items)
-            elif p == "X":
+            elif p == "X(Twitter)":
                 res = scrape_twitter(client, keyword, max_items)
-            elif p == "FB":
+            elif p == "Facebook":
                 res = scrape_facebook(client, keyword, max_items)
             else:
                 res = []
