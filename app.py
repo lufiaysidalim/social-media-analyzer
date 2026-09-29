@@ -11,7 +11,7 @@ import io
 st.set_page_config(
     page_title="Social Media Analyzer Pro",
     page_icon="📊",
-    layout="centered"
+    layout="wide"
 )
 
 st.title("📊 Social Media Analyzer Pro")
@@ -38,8 +38,8 @@ with col3:
     filter_time = st.selectbox("Rentang Waktu:", filter_time_options, index=2)
 
 with col4:
-    # FITUR BARU: Buka keran limit sebanyak-banyaknya untuk mencari postingan engagement tinggi di masa lalu
-    raw_limit = st.number_input("Batas Tarik Raw Data:", min_value=100, max_value=5000000, value=5000, step=1000)
+    # DEFAULT DINAIKKAN MENJADI 500.000 POSTINGAN
+    raw_limit = st.number_input("Batas Tarik Raw Data:", min_value=1000, max_value=5000000, value=500000, step=50000)
 
 start_date, end_date = None, None
 if filter_time == "Custom":
@@ -127,13 +127,17 @@ def scrape_instagram(client, keyword, scrape_limit):
             run_input = {"usernames": [clean_kw], "resultsLimit": scrape_limit}
             run = client.actor("apify/instagram-scraper").call(run_input=run_input)
         else:
-            run_input = {"hashtags": [clean_kw.replace(" ", "")], "resultsLimit": scrape_limit}
+            run_input = {
+                "hashtags": [clean_kw.replace(" ", "")], 
+                "resultsLimit": scrape_limit,
+                "resultsType": "top"  # Mengambil postingan populer/top engagement
+            }
             run = client.actor("apify/instagram-hashtag-scraper").call(run_input=run_input)
 
         dataset_id = get_dataset_id(run)
-        dataset_items = client.dataset(dataset_id).list_items().items
         
-        for item in dataset_items:
+        # PERBAIKAN: Gunakan iterate_items() untuk membaca seluruh ratusan ribu baris data tanpa terpotong limit 1000
+        for item in client.dataset(dataset_id).iterate_items():
             results.append({
                 "Platform": "Instagram",
                 "Author": item.get("ownerUsername") or item.get("owner", {}).get("username") or clean_kw,
@@ -163,9 +167,9 @@ def scrape_tiktok(client, keyword, scrape_limit):
 
         run = client.actor("clockworks/free-tiktok-scraper").call(run_input=run_input)
         dataset_id = get_dataset_id(run)
-        dataset_items = client.dataset(dataset_id).list_items().items
         
-        for item in dataset_items:
+        # PERBAIKAN: Iterate seluru item dataset
+        for item in client.dataset(dataset_id).iterate_items():
             results.append({
                 "Platform": "TikTok",
                 "Author": item.get("authorMeta", {}).get("name") or item.get("author", "N/A"),
@@ -193,12 +197,11 @@ def scrape_twitter(client, keyword, scrape_limit):
         else:
             search_query = clean_kw
 
-        run_input = {"searchTerms": [search_query], "maxItems": scrape_limit}
+        run_input = {"searchTerms": [search_query], "maxItems": scrape_limit, "sort": "Top"}
         run = client.actor("apify/twitter-scraper").call(run_input=run_input)
         dataset_id = get_dataset_id(run)
-        dataset_items = client.dataset(dataset_id).list_items().items
         
-        for item in dataset_items:
+        for item in client.dataset(dataset_id).iterate_items():
             results.append({
                 "Platform": "X(Twitter)",
                 "Author": item.get("author", {}).get("userName") or "N/A",
@@ -232,9 +235,8 @@ def scrape_facebook(client, keyword, scrape_limit):
         }
         run = client.actor("apify/facebook-posts-scraper").call(run_input=run_input)
         dataset_id = get_dataset_id(run)
-        dataset_items = client.dataset(dataset_id).list_items().items
         
-        for item in dataset_items:
+        for item in client.dataset(dataset_id).iterate_items():
             results.append({
                 "Platform": "Facebook",
                 "Author": item.get("user", {}).get("name") or "N/A",
@@ -273,11 +275,11 @@ if btn_analyze:
             client = ApifyClient(APIFY_PERMANENT_TOKEN)
             all_raw_data = []
 
-            status_box = st.status(f"🔍 Mengambil {raw_limit} data mentah untuk database awal...", expanded=True)
+            status_box = st.status(f"🔍 Mengambil {raw_limit:,} data mentah untuk database awal...", expanded=True)
 
             # 1. Jalankan Scrape data mentah sebanyak input `raw_limit`
             for p in platforms:
-                status_box.write(f"⏳ Mengekstrak maksimal {raw_limit} data dari **{p}** (Proses ini mungkin memakan waktu)...")
+                status_box.write(f"⏳ Mengekstrak maksimal {raw_limit:,} data dari **{p}**...")
                 if p == "Instagram":
                     res = scrape_instagram(client, keyword, raw_limit)
                 elif p == "TikTok":
@@ -297,8 +299,8 @@ if btn_analyze:
             else:
                 df_raw = pd.DataFrame(all_raw_data)
                 
-                # 2. Jalankan Filter Berdasarkan Rentang Waktu (Database Mentah -> Disaring)
-                status_box.write(f"⏳ Total {len(df_raw)} data berhasil ditarik. Menerapkan filter rentang waktu: {filter_time}...")
+                # 2. Jalankan Filter Berdasarkan Rentang Waktu
+                status_box.write(f"⏳ Total {len(df_raw):,} data berhasil ditarik. Menerapkan filter rentang waktu: {filter_time}...")
                 df_time_filtered = filter_by_time_range(df_raw, filter_time, start_date, end_date)
                 
                 if df_time_filtered.empty:
@@ -326,10 +328,10 @@ if btn_analyze:
                     else:
                         df_final = df_sorted.head(int(max_items_selection)).reset_index(drop=True)
                     
-                    # Simpan data mentah tersaring ke dalam memory Streamlit
+                    # Simpan data tersaring ke memori Streamlit
                     st.session_state["scraped_data"] = df_final
                     status_box.update(label="✅ Analisa & penyaringan selesai!", state="complete", expanded=False)
-                    st.success(f"🎉 Berhasil memproses data! Dari raw data yang ditarik, {len(df_final)} postingan dengan engagement tertinggi siap ditampilkan.")
+                    st.success(f"🎉 Berhasil memproses data! Dari {len(df_raw):,} raw data yang ditarik, {len(df_final)} postingan dengan engagement tertinggi ditampilkan.")
 
 
 # ==========================================
@@ -347,9 +349,9 @@ if "scraped_data" in st.session_state:
         
         col_m1, col_m2, col_m3, col_m4 = st.columns(4)
         col_m1.metric("Data Ditampilkan", len(df))
-        col_m2.metric("Total Likes", f"{df['Likes'].sum():,}")
-        col_m3.metric("Total Komentar", f"{df['Comments'].sum():,}")
-        col_m4.metric("Total Views/Shares", f"{df['Shares/Views'].sum():,}")
+        col_m2.metric("Total Likes", f"{int(df['Likes'].sum()):,}")
+        col_m3.metric("Total Komentar", f"{int(df['Comments'].sum()):,}")
+        col_m4.metric("Total Views/Shares", f"{int(df['Shares/Views'].sum()):,}")
 
         st.markdown("### Visualisasi Interaksi")
         col_chart1, col_chart2 = st.columns(2)
