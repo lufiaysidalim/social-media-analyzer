@@ -30,14 +30,12 @@ with col1:
     platforms = st.multiselect("Platform:", ["Facebook", "Instagram", "TikTok", "X(Twitter)"], default=["Instagram"])
 
 with col2:
-    max_items = st.selectbox("Jumlah Postingan:", [10, 20, 50, 100, 500, 1000], index=0)
+    max_items_options = [10, 20, 50, 100, 500, 1000, "-"]
+    max_items_selection = st.selectbox("Jumlah Postingan:", max_items_options, index=0)
 
 with col3:
-    filter_time = st.selectbox(
-        "Rentang Waktu:", 
-        ["1 Hari", "1 Minggu", "1 Bulan", "3 Bulan", "6 Bulan", "1 Tahun", "5 Tahun", "Custom"], 
-        index=2
-    )
+    filter_time_options = ["1 Hari", "1 Minggu", "1 Bulan", "3 Bulan", "6 Bulan", "1 Tahun", "5 Tahun", "Custom", "-"]
+    filter_time = st.selectbox("Rentang Waktu:", filter_time_options, index=2)
 
 start_date, end_date = None, None
 if filter_time == "Custom":
@@ -68,12 +66,10 @@ def parse_timestamp(ts):
     if isinstance(ts, datetime):
         return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
     try:
-        # Coba parse ISO format string
-        parsed = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
         return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
     except Exception:
         try:
-            # Coba format epoch timestamp (angka detik/milidetik)
             if str(ts).isdigit():
                 val = float(ts)
                 if val > 1e12: # milidetik
@@ -84,46 +80,54 @@ def parse_timestamp(ts):
     return datetime.now(timezone.utc)
 
 def filter_by_time_range(df, filter_time, start_date=None, end_date=None):
-    """Filter DataFrame berdasarkan rentang waktu yang dipilih"""
-    if df.empty:
+    """Filter DataFrame berdasarkan rentang waktu yang dipilih. Jika '-' berarti ambil semua data."""
+    if df.empty or filter_time == "-":
         return df
     
     now = datetime.now(timezone.utc)
-    
+    df['ParsedTime'] = df['Timestamp'].apply(parse_timestamp)
+
     if filter_time == "1 Hari":
         limit_date = now - timedelta(days=1)
+        filtered = df[df['ParsedTime'] >= limit_date]
     elif filter_time == "1 Minggu":
         limit_date = now - timedelta(weeks=1)
+        filtered = df[df['ParsedTime'] >= limit_date]
     elif filter_time == "1 Bulan":
         limit_date = now - timedelta(days=30)
+        filtered = df[df['ParsedTime'] >= limit_date]
     elif filter_time == "3 Bulan":
         limit_date = now - timedelta(days=90)
+        filtered = df[df['ParsedTime'] >= limit_date]
     elif filter_time == "6 Bulan":
         limit_date = now - timedelta(days=180)
+        filtered = df[df['ParsedTime'] >= limit_date]
     elif filter_time == "1 Tahun":
         limit_date = now - timedelta(days=365)
+        filtered = df[df['ParsedTime'] >= limit_date]
     elif filter_time == "5 Tahun":
         limit_date = now - timedelta(days=365*5)
+        filtered = df[df['ParsedTime'] >= limit_date]
     elif filter_time == "Custom" and start_date and end_date:
-        # Ubah date_input menjadi datetime aware UTC
         start_dt = datetime.combine(start_date, datetime.min.time()).replace(tzinfo=timezone.utc)
         end_dt = datetime.combine(end_date, datetime.max.time()).replace(tzinfo=timezone.utc)
-        df['ParsedTime'] = df['Timestamp'].apply(parse_timestamp)
-        return df[(df['ParsedTime'] >= start_dt) & (df['ParsedTime'] <= end_dt)].drop(columns=['ParsedTime'])
+        filtered = df[(df['ParsedTime'] >= start_dt) & (df['ParsedTime'] <= end_dt)]
     else:
-        return df
+        filtered = df
 
-    df['ParsedTime'] = df['Timestamp'].apply(parse_timestamp)
-    filtered = df[df['ParsedTime'] >= limit_date].drop(columns=['ParsedTime'])
-    return filtered
+    return filtered.drop(columns=['ParsedTime'], errors='ignore')
 
 
-def scrape_instagram(client, keyword, fetch_limit):
+def scrape_instagram(client, keyword, fetch_limit_val):
     clean_kw = keyword.replace("#", "").replace("@", "").strip()
     results = []
     try:
-        # Tarik data sedikit lebih banyak dari target agar setelah difilter waktu masih mencukupi
-        scrape_limit = max(int(fetch_limit) * 3, 50)
+        # Tentukan limit scraping
+        if fetch_limit_val == "-":
+            scrape_limit = 200 # Default aman jika range tanggal tanpa limit jumlah
+        else:
+            scrape_limit = max(int(fetch_limit_val) * 3, 50)
+
         if keyword.startswith("@"):
             run_input = {"usernames": [clean_kw], "resultsLimit": scrape_limit}
             run = client.actor("apify/instagram-scraper").call(run_input=run_input)
@@ -152,11 +156,15 @@ def scrape_instagram(client, keyword, fetch_limit):
         st.warning(f"Kendala pada platform Instagram: {str(e)}")
     return results
 
-def scrape_tiktok(client, keyword, fetch_limit):
+def scrape_tiktok(client, keyword, fetch_limit_val):
     results = []
     clean_kw = keyword.replace("#", "").replace("@", "").strip()
     try:
-        scrape_limit = max(int(fetch_limit) * 3, 50)
+        if fetch_limit_val == "-":
+            scrape_limit = 200
+        else:
+            scrape_limit = max(int(fetch_limit_val) * 3, 50)
+
         if keyword.startswith("@"):
             run_input = {"profiles": [clean_kw], "resultsPerPage": scrape_limit}
         elif keyword.startswith("#"):
@@ -183,11 +191,15 @@ def scrape_tiktok(client, keyword, fetch_limit):
         st.warning(f"Kendala pada platform TikTok: {str(e)}")
     return results
 
-def scrape_twitter(client, keyword, fetch_limit):
+def scrape_twitter(client, keyword, fetch_limit_val):
     results = []
     clean_kw = keyword.replace("#", "").replace("@", "").strip()
     try:
-        scrape_limit = max(int(fetch_limit) * 3, 50)
+        if fetch_limit_val == "-":
+            scrape_limit = 200
+        else:
+            scrape_limit = max(int(fetch_limit_val) * 3, 50)
+
         if keyword.startswith("@"):
             search_query = f"from:{clean_kw}"
         elif keyword.startswith("#"):
@@ -215,11 +227,15 @@ def scrape_twitter(client, keyword, fetch_limit):
         st.warning(f"Kendala pada platform X(Twitter): {str(e)}")
     return results
 
-def scrape_facebook(client, keyword, fetch_limit):
+def scrape_facebook(client, keyword, fetch_limit_val):
     results = []
     clean_kw = keyword.replace("#", "").replace("@", "").strip()
     try:
-        scrape_limit = max(int(fetch_limit) * 3, 50)
+        if fetch_limit_val == "-":
+            scrape_limit = 200
+        else:
+            scrape_limit = max(int(fetch_limit_val) * 3, 50)
+
         if keyword.startswith("@"):
             start_url = f"https://www.facebook.com/{clean_kw}"
         elif keyword.startswith("#"):
@@ -261,60 +277,72 @@ if btn_analyze:
     elif not platforms:
         st.error("❌ Silakan pilih minimal satu platform media sosial!")
     else:
-        APIFY_PERMANENT_TOKEN = st.secrets["APIFY_API_TOKEN"]
-        client = ApifyClient(APIFY_PERMANENT_TOKEN)
-        all_raw_data = []
+        try:
+            APIFY_PERMANENT_TOKEN = st.secrets["APIFY_API_TOKEN"]
+        except Exception:
+            APIFY_PERMANENT_TOKEN = ""
 
-        status_box = st.status("🔍 Menganalisa & menyaring data media sosial...", expanded=True)
-
-        # 1. Jalankan Filter Platform & Scrape data mentah
-        for p in platforms:
-            status_box.write(f"⏳ Mengambil data dari **{p}**...")
-            if p == "Instagram":
-                res = scrape_instagram(client, keyword, max_items)
-            elif p == "TikTok":
-                res = scrape_tiktok(client, keyword, max_items)
-            elif p == "X(Twitter)":
-                res = scrape_twitter(client, keyword, max_items)
-            elif p == "Facebook":
-                res = scrape_facebook(client, keyword, max_items)
-            else:
-                res = []
-            
-            all_raw_data.extend(res)
-
-        if not all_raw_data:
-            status_box.update(label="❌ Gagal mengambil data.", state="error", expanded=False)
-            st.error("❌ Tidak ada data yang ditemukan dari platform yang dipilih.")
+        if not APIFY_PERMANENT_TOKEN:
+            st.error("❌ APIFY_API_TOKEN belum disetting di Streamlit Secrets.")
         else:
-            df_raw = pd.DataFrame(all_raw_data)
-            
-            # 2. Jalankan Filter Berdasarkan Rentang Waktu
-            status_box.write("⏳ Menerapkan filter rentang waktu...")
-            df_time_filtered = filter_by_time_range(df_raw, filter_time, start_date, end_date)
-            
-            if df_time_filtered.empty:
-                status_box.update(label="⚠️ Tidak ada data dalam rentang waktu.", state="error", expanded=False)
-                st.warning("⚠️ Ditemukan data, tetapi tidak ada yang masuk dalam rentang waktu yang dipilih. Coba perlebar rentang waktu Anda.")
+            client = ApifyClient(APIFY_PERMANENT_TOKEN)
+            all_raw_data = []
+
+            status_box = st.status("🔍 Menganalisa & menyaring data media sosial...", expanded=True)
+
+            # 1. Jalankan Filter Platform & Scrape data mentah
+            for p in platforms:
+                status_box.write(f"⏳ Mengambil data dari **{p}**...")
+                if p == "Instagram":
+                    res = scrape_instagram(client, keyword, max_items_selection)
+                elif p == "TikTok":
+                    res = scrape_tiktok(client, keyword, max_items_selection)
+                elif p == "X(Twitter)":
+                    res = scrape_twitter(client, keyword, max_items_selection)
+                elif p == "Facebook":
+                    res = scrape_facebook(client, keyword, max_items_selection)
+                else:
+                    res = []
+                
+                all_raw_data.extend(res)
+
+            if not all_raw_data:
+                status_box.update(label="❌ Gagal mengambil data.", state="error", expanded=False)
+                st.error("❌ Tidak ada data yang ditemukan dari platform yang dipilih.")
             else:
-                # 3. Hitung Skor Engagement (Likes + Comments + Shares/Views)
-                df_time_filtered['Likes'] = pd.to_numeric(df_time_filtered['Likes'], errors='coerce').fillna(0)
-                df_time_filtered['Comments'] = pd.to_numeric(df_time_filtered['Comments'], errors='coerce').fillna(0)
-                df_time_filtered['Shares/Views'] = pd.to_numeric(df_time_filtered['Shares/Views'], errors='coerce').fillna(0)
+                df_raw = pd.DataFrame(all_raw_data)
                 
-                df_time_filtered['Engagement_Score'] = (
-                    df_time_filtered['Likes'] + 
-                    df_time_filtered['Comments'] + 
-                    df_time_filtered['Shares/Views']
-                )
+                # 2. Jalankan Filter Berdasarkan Rentang Waktu
+                status_box.write("⏳ Menerapkan filter rentang waktu...")
+                df_time_filtered = filter_by_time_range(df_raw, filter_time, start_date, end_date)
                 
-                # 4. Urutkan berdasarkan Engagement Tertinggi dan ambil sejumlah max_items
-                df_sorted = df_time_filtered.sort_values(by='Engagement_Score', ascending=False)
-                df_final = df_sorted.head(int(max_items)).reset_index(drop=True)
-                
-                st.session_state["scraped_data"] = df_final
-                status_box.update(label="✅ Analisa & penyaringan selesai!", state="complete", expanded=False)
-                st.success(f"🎉 Berhasil menyaring dan mendapatkan {len(df_final)} postingan dengan engagement tertinggi!")
+                if df_time_filtered.empty:
+                    status_box.update(label="⚠️ Tidak ada data dalam rentang waktu.", state="error", expanded=False)
+                    st.warning("⚠️ Ditemukan data, tetapi tidak ada yang masuk dalam rentang waktu yang dipilih. Coba perlebar rentang waktu Anda.")
+                else:
+                    # 3. Hitung Skor Engagement (Likes + Comments + Shares/Views)
+                    df_time_filtered['Likes'] = pd.to_numeric(df_time_filtered['Likes'], errors='coerce').fillna(0)
+                    df_time_filtered['Comments'] = pd.to_numeric(df_time_filtered['Comments'], errors='coerce').fillna(0)
+                    df_time_filtered['Shares/Views'] = pd.to_numeric(df_time_filtered['Shares/Views'], errors='coerce').fillna(0)
+                    
+                    df_time_filtered['Engagement_Score'] = (
+                        df_time_filtered['Likes'] + 
+                        df_time_filtered['Comments'] + 
+                        df_time_filtered['Shares/Views']
+                    )
+                    
+                    # 4. Urutkan berdasarkan Engagement Tertinggi
+                    df_sorted = df_time_filtered.sort_values(by='Engagement_Score', ascending=False)
+                    
+                    # Cek apakah max_items berupa angka atau '-'
+                    if max_items_selection == "-":
+                        df_final = df_sorted.reset_index(drop=True)
+                    else:
+                        df_final = df_sorted.head(int(max_items_selection)).reset_index(drop=True)
+                    
+                    st.session_state["scraped_data"] = df_final
+                    status_box.update(label="✅ Analisa & penyaringan selesai!", state="complete", expanded=False)
+                    st.success(f"🎉 Berhasil menyaring dan mendapatkan {len(df_final)} postingan dengan engagement tertinggi!")
 
 
 # ==========================================
@@ -375,7 +403,7 @@ if "scraped_data" in st.session_state:
         excel_buffer = io.BytesIO()
         with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
             df.to_excel(writer, sheet_name='Data Postingan', index=False)
-        excel_data = excel_buffer.getvalue()
+            excel_data = excel_buffer.getvalue()
 
         st.download_button(
             label="📊 Unduh Data sebagai Excel (.xlsx)",
