@@ -11,7 +11,7 @@ import io
 st.set_page_config(
     page_title="Social Media Analyzer Pro",
     page_icon="📊",
-    layout="centered"
+    layout="wide"
 )
 
 st.title("📊 Social Media Analyzer Pro")
@@ -31,7 +31,7 @@ with col1:
 
 with col2:
     max_items_options = [10, 20, 50, 100, 500, 1000, "-"]
-    max_items_selection = st.selectbox("Jumlah Postingan:", max_items_options, index=0)
+    max_items_selection = st.selectbox("Jumlah Postingan (Top Engagement):", max_items_options, index=0)
 
 with col3:
     filter_time_options = ["1 Hari", "1 Minggu", "1 Bulan", "3 Bulan", "6 Bulan", "1 Tahun", "5 Tahun", "Custom", "-"]
@@ -54,14 +54,12 @@ btn_analyze = st.button("ANALISA")
 # ==========================================
 
 def get_dataset_id(run):
-    """Fungsi aman untuk mengambil ID dataset dari objek/dictionary run Apify"""
     if isinstance(run, dict):
         return run.get("defaultDatasetId")
     return getattr(run, "defaultDatasetId", getattr(run, "default_dataset_id", None))
 
 def parse_timestamp(ts):
-    """Konversi berbagai format timestamp ke objek datetime (aware/naive UTC)"""
-    if not ts:
+    if not ts or ts == "N/A":
         return datetime.now(timezone.utc)
     if isinstance(ts, datetime):
         return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
@@ -80,7 +78,6 @@ def parse_timestamp(ts):
     return datetime.now(timezone.utc)
 
 def filter_by_time_range(df, filter_time, start_date=None, end_date=None):
-    """Filter DataFrame berdasarkan rentang waktu yang dipilih. Jika '-' berarti ambil semua data."""
     if df.empty or filter_time == "-":
         return df
     
@@ -117,23 +114,26 @@ def filter_by_time_range(df, filter_time, start_date=None, end_date=None):
 
     return filtered.drop(columns=['ParsedTime'], errors='ignore')
 
+def determine_scrape_limit(max_items_val, filter_time_val):
+    """Menentukan batas pengambilan data awal (database) sebelum difilter."""
+    if filter_time_val != "-":
+        # Jika ada filter waktu, ambil data mentah dalam jumlah besar agar tidak kehilangan post tinggi engagement
+        # Apify memakan kredit, jadi kita batasi max 1000 untuk keamanan scraping
+        if max_items_val == "-":
+            return 1000 
+        else:
+            return min(max(int(max_items_val) * 5, 200), 1500)
+    else:
+        # Jika tidak ada filter waktu, ambil langsung sesuai jumlah atau max 1000
+        return 1000 if max_items_val == "-" else int(max_items_val)
 
-def scrape_instagram(client, keyword, fetch_limit_val):
+def scrape_instagram(client, keyword, scrape_limit):
     clean_kw = keyword.replace("#", "").replace("@", "").strip()
     results = []
     try:
-        # Tentukan limit scraping
-        if fetch_limit_val == "-":
-            scrape_limit = 200 # Default aman jika range tanggal tanpa limit jumlah
-        else:
-            scrape_limit = max(int(fetch_limit_val) * 3, 50)
-
         if keyword.startswith("@"):
             run_input = {"usernames": [clean_kw], "resultsLimit": scrape_limit}
             run = client.actor("apify/instagram-scraper").call(run_input=run_input)
-        elif keyword.startswith("#"):
-            run_input = {"hashtags": [clean_kw], "resultsLimit": scrape_limit}
-            run = client.actor("apify/instagram-hashtag-scraper").call(run_input=run_input)
         else:
             run_input = {"hashtags": [clean_kw.replace(" ", "")], "resultsLimit": scrape_limit}
             run = client.actor("apify/instagram-hashtag-scraper").call(run_input=run_input)
@@ -145,6 +145,8 @@ def scrape_instagram(client, keyword, fetch_limit_val):
             results.append({
                 "Platform": "Instagram",
                 "Author": item.get("ownerUsername") or item.get("owner", {}).get("username") or clean_kw,
+                "Followers": item.get("owner", {}).get("followersCount", "N/A"),
+                "Account_Created": "N/A", # Instagram post API jarang mengembalikan tanggal pembuatan akun
                 "Content": item.get("caption") or "",
                 "Likes": item.get("likesCount", 0) or 0,
                 "Comments": item.get("commentsCount", 0) or 0,
@@ -156,15 +158,10 @@ def scrape_instagram(client, keyword, fetch_limit_val):
         st.warning(f"Kendala pada platform Instagram: {str(e)}")
     return results
 
-def scrape_tiktok(client, keyword, fetch_limit_val):
+def scrape_tiktok(client, keyword, scrape_limit):
     results = []
     clean_kw = keyword.replace("#", "").replace("@", "").strip()
     try:
-        if fetch_limit_val == "-":
-            scrape_limit = 200
-        else:
-            scrape_limit = max(int(fetch_limit_val) * 3, 50)
-
         if keyword.startswith("@"):
             run_input = {"profiles": [clean_kw], "resultsPerPage": scrape_limit}
         elif keyword.startswith("#"):
@@ -180,6 +177,8 @@ def scrape_tiktok(client, keyword, fetch_limit_val):
             results.append({
                 "Platform": "TikTok",
                 "Author": item.get("authorMeta", {}).get("name") or item.get("author", "N/A"),
+                "Followers": item.get("authorMeta", {}).get("fans", "N/A"),
+                "Account_Created": "N/A",
                 "Content": item.get("text") or item.get("desc") or "",
                 "Likes": item.get("diggCount") or item.get("likesCount", 0) or 0,
                 "Comments": item.get("commentCount", 0) or 0,
@@ -191,15 +190,10 @@ def scrape_tiktok(client, keyword, fetch_limit_val):
         st.warning(f"Kendala pada platform TikTok: {str(e)}")
     return results
 
-def scrape_twitter(client, keyword, fetch_limit_val):
+def scrape_twitter(client, keyword, scrape_limit):
     results = []
     clean_kw = keyword.replace("#", "").replace("@", "").strip()
     try:
-        if fetch_limit_val == "-":
-            scrape_limit = 200
-        else:
-            scrape_limit = max(int(fetch_limit_val) * 3, 50)
-
         if keyword.startswith("@"):
             search_query = f"from:{clean_kw}"
         elif keyword.startswith("#"):
@@ -216,6 +210,8 @@ def scrape_twitter(client, keyword, fetch_limit_val):
             results.append({
                 "Platform": "X(Twitter)",
                 "Author": item.get("author", {}).get("userName") or "N/A",
+                "Followers": item.get("author", {}).get("followers", "N/A"),
+                "Account_Created": item.get("author", {}).get("createdAt", "N/A"),
                 "Content": item.get("full_text") or item.get("text") or "",
                 "Likes": item.get("likeCount", 0) or 0,
                 "Comments": item.get("replyCount", 0) or 0,
@@ -227,15 +223,10 @@ def scrape_twitter(client, keyword, fetch_limit_val):
         st.warning(f"Kendala pada platform X(Twitter): {str(e)}")
     return results
 
-def scrape_facebook(client, keyword, fetch_limit_val):
+def scrape_facebook(client, keyword, scrape_limit):
     results = []
     clean_kw = keyword.replace("#", "").replace("@", "").strip()
     try:
-        if fetch_limit_val == "-":
-            scrape_limit = 200
-        else:
-            scrape_limit = max(int(fetch_limit_val) * 3, 50)
-
         if keyword.startswith("@"):
             start_url = f"https://www.facebook.com/{clean_kw}"
         elif keyword.startswith("#"):
@@ -255,6 +246,8 @@ def scrape_facebook(client, keyword, fetch_limit_val):
             results.append({
                 "Platform": "Facebook",
                 "Author": item.get("user", {}).get("name") or "N/A",
+                "Followers": "N/A",
+                "Account_Created": "N/A",
                 "Content": item.get("text") or "",
                 "Likes": item.get("likes", 0) or 0,
                 "Comments": item.get("comments", 0) or 0,
@@ -288,19 +281,22 @@ if btn_analyze:
             client = ApifyClient(APIFY_PERMANENT_TOKEN)
             all_raw_data = []
 
-            status_box = st.status("🔍 Menganalisa & menyaring data media sosial...", expanded=True)
+            status_box = st.status("🔍 Mengambil data dalam jumlah besar untuk database awal...", expanded=True)
+
+            # Hitung kebutuhan Scraping Limit untuk database mentah
+            scrape_limit = determine_scrape_limit(max_items_selection, filter_time)
 
             # 1. Jalankan Filter Platform & Scrape data mentah
             for p in platforms:
-                status_box.write(f"⏳ Mengambil data dari **{p}**...")
+                status_box.write(f"⏳ Mengambil maksimal {scrape_limit} data mentah dari **{p}**...")
                 if p == "Instagram":
-                    res = scrape_instagram(client, keyword, max_items_selection)
+                    res = scrape_instagram(client, keyword, scrape_limit)
                 elif p == "TikTok":
-                    res = scrape_tiktok(client, keyword, max_items_selection)
+                    res = scrape_tiktok(client, keyword, scrape_limit)
                 elif p == "X(Twitter)":
-                    res = scrape_twitter(client, keyword, max_items_selection)
+                    res = scrape_twitter(client, keyword, scrape_limit)
                 elif p == "Facebook":
-                    res = scrape_facebook(client, keyword, max_items_selection)
+                    res = scrape_facebook(client, keyword, scrape_limit)
                 else:
                     res = []
                 
@@ -313,14 +309,15 @@ if btn_analyze:
                 df_raw = pd.DataFrame(all_raw_data)
                 
                 # 2. Jalankan Filter Berdasarkan Rentang Waktu
-                status_box.write("⏳ Menerapkan filter rentang waktu...")
+                status_box.write("⏳ Menerapkan filter rentang waktu pada database...")
                 df_time_filtered = filter_by_time_range(df_raw, filter_time, start_date, end_date)
                 
                 if df_time_filtered.empty:
                     status_box.update(label="⚠️ Tidak ada data dalam rentang waktu.", state="error", expanded=False)
-                    st.warning("⚠️ Ditemukan data, tetapi tidak ada yang masuk dalam rentang waktu yang dipilih. Coba perlebar rentang waktu Anda.")
+                    st.warning("⚠️ Ditemukan data, tetapi tidak ada yang masuk dalam rentang waktu yang dipilih.")
                 else:
                     # 3. Hitung Skor Engagement (Likes + Comments + Shares/Views)
+                    status_box.write("⏳ Menghitung & mengurutkan skor engagement tertinggi...")
                     df_time_filtered['Likes'] = pd.to_numeric(df_time_filtered['Likes'], errors='coerce').fillna(0)
                     df_time_filtered['Comments'] = pd.to_numeric(df_time_filtered['Comments'], errors='coerce').fillna(0)
                     df_time_filtered['Shares/Views'] = pd.to_numeric(df_time_filtered['Shares/Views'], errors='coerce').fillna(0)
@@ -334,7 +331,7 @@ if btn_analyze:
                     # 4. Urutkan berdasarkan Engagement Tertinggi
                     df_sorted = df_time_filtered.sort_values(by='Engagement_Score', ascending=False)
                     
-                    # Cek apakah max_items berupa angka atau '-'
+                    # 5. Filter Jumlah Postingan Terakhir (Top N)
                     if max_items_selection == "-":
                         df_final = df_sorted.reset_index(drop=True)
                     else:
@@ -384,7 +381,7 @@ if "scraped_data" in st.session_state:
     with tab2:
         st.subheader("Detail Posting Media Sosial (Urutan Engagement Tertinggi)")
         st.dataframe(
-            df[["Platform", "Author", "Content", "Likes", "Comments", "Shares/Views", "Engagement_Score", "Timestamp", "Url"]],
+            df[["Platform", "Author", "Followers", "Account_Created", "Content", "Likes", "Comments", "Shares/Views", "Engagement_Score", "Timestamp", "Url"]],
             use_container_width=True
         )
 
@@ -408,7 +405,7 @@ if "scraped_data" in st.session_state:
         st.download_button(
             label="📊 Unduh Data sebagai Excel (.xlsx)",
             data=excel_data,
-            file_name=f"analisa_sosmed_{keyword.replace('@','').replace('#','')}.csv".replace(".csv", ".xlsx"),
+            file_name=f"analisa_sosmed_{keyword.replace('@','').replace('#','')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True
         )
