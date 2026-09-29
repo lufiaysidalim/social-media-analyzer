@@ -14,84 +14,60 @@ st.set_page_config(
     layout="centered"
 )
 
-# Header Utama
-st.title("📊 Social Media Analyzer Pro (& Multi-Tab Report)")
-st.caption("Sistem Analisis Media Sosial Profesional bertenaga Apify API & Google Drive Integration.")
+st.title("📊 Social Media Analyzer Pro")
+st.caption("Sistem Analisis Media Sosial Profesional bertenaga Apify API.")
 
 # ==========================================
-# 2. SIDEBAR & INTEGRASI API
+# 2. FORM INPUT UTAMA (4 BARIS SESUAI PERMINTAAN)
 # ==========================================
-st.sidebar.header("⚙️ Pengaturan & API Key")
 
-# Fungsi pembantu membaca token dari Secrets secara aman
-def load_apify_token():
-    try:
-        if "APIFY_TOKEN" in st.secrets:
-            return st.secrets["APIFY_TOKEN"]
-    except Exception:
-        pass
-    return ""
+# BARIS 1: Input Tema / Hashtag / Nama Akun
+keyword = st.text_input("Tema / Hashtag / Nama Akun:", value="metrologi")
 
-default_apify_token = load_apify_token()
-
-# Jika token ada di secrets, jalankan di background. 
-# Jika tidak ada, tampilkan input box di sidebar.
-if default_apify_token:
-    apify_token = default_apify_token
-    st.sidebar.success("✅ Apify API Token terhubung dari Secrets (Background)!")
-else:
-    apify_token = st.sidebar.text_input("Apify API Token:", value="", type="password")
-
-st.sidebar.markdown("---")
-st.sidebar.info("💡 **Tips Pencarian Instagram:**\n- Gunakan `@nama_akun` untuk mengambil pos dari akun tertentu.\n- Gunakan `kata_kunci` atau `#hashtag` untuk mencari postingan berdasarkan topik.")
-
-# ==========================================
-# 3. FORM INPUT UTAMA
-# ==========================================
-col1, col2, col3 = st.columns([2, 1.5, 1.5])
+# BARIS 2: Filter Platform, Jumlah Postingan, Rentang Waktu
+col1, col2, col3 = st.columns(3)
 
 with col1:
-    keyword = st.text_input("Topik / Hashtag / Nama Akun:", value="metrologi")
+    platforms = st.multiselect("Platform:", ["FB", "IG", "TikTok", "X"], default=["IG"])
 
 with col2:
-    platforms = st.multiselect("Platform:", ["Instagram", "YouTube", "TikTok", "Twitter/X"], default=["Instagram"])
+    max_items = st.selectbox("Jumlah Postingan:", [10, 20, 50, 100, 500, 1000], index=0)
 
 with col3:
-    max_items = st.selectbox("Jumlah Post Per Platform:", [5, 10, 20, 50, 100], index=1)
+    filter_time = st.selectbox("Rentang Waktu:", ["1 Hari", "1 Bulan", "6 Bulan", "1 Tahun", "5 Tahun", "Custom"], index=1)
 
-col_f1, col_f2 = st.columns(2)
-with col_f1:
-    filter_time = st.selectbox("Rentang Waktu Filter:", ["1 Minggu", "1 Bulan", "3 Bulan", "6 Bulan", "1 Tahun"], index=1)
+# Kondisi jika memilih rentang waktu "Custom"
+if filter_time == "Custom":
+    col_date1, col_date2 = st.columns(2)
+    with col_date1:
+        start_date = st.date_input("Waktu Range Awal")
+    with col_date2:
+        end_date = st.date_input("Waktu Range Akhir")
 
-with col_f2:
-    security_token = st.text_input("Token Akses Keamanan (Khusus Pengguna Berizin):", type="password")
+# BARIS 3: Token API
+apify_token = st.text_input("Token (Apify API):", type="password")
+
+# BARIS 4: Tombol Analisa (Ukuran Kecil / Default)
+btn_analyze = st.button("Analisa")
+
 
 # ==========================================
-# 4. FUNGSI SCRAPER PER PLATFORM
+# 3. FUNGSI SCRAPER PER PLATFORM
 # ==========================================
 
 def scrape_instagram(client, keyword, max_items):
-    """
-    Fungsi Scraper Instagram dengan perbaikan Actor Apify:
-    - Akun (@username) -> apify/instagram-post-scraper
-    - Hashtag/Topik -> apify/instagram-hashtag-scraper
-    """
     clean_kw = keyword.replace("#", "").replace("@", "").strip()
     results = []
 
-    # OPSI A: Jika pencarian berawalan '@' (Target Profil Akun)
     if keyword.startswith("@"):
         try:
-            run_input = {
-                "username": [clean_kw],
-                "resultsLimit": int(max_items)
-            }
+            run_input = {"username": [clean_kw], "resultsLimit": int(max_items)}
             run = client.actor("apify/instagram-post-scraper").call(run_input=run_input)
             dataset_items = client.dataset(run["defaultDatasetId"]).list_items().items
             
             for item in dataset_items:
                 results.append({
-                    "Platform": "Instagram",
+                    "Platform": "IG",
                     "Author": item.get("ownerUsername") or clean_kw,
                     "Content": item.get("caption") or "",
                     "Likes": item.get("likesCount", 0),
@@ -104,20 +80,14 @@ def scrape_instagram(client, keyword, max_items):
         except Exception as e:
             st.warning(f"Metode Profile Scraper gagal: {str(e)}. Mengalihkan ke Hashtag Scraper...")
 
-    # OPSI B: Jika pencarian berupa Hashtag / Topik (Default)
     try:
-        run_input = {
-            "hashtags": [clean_kw],
-            "resultsLimit": int(max_items),
-            "resultsType": "posts"
-        }
-        # Gunakan actor khusus hashtag
+        run_input = {"hashtags": [clean_kw], "resultsLimit": int(max_items), "resultsType": "posts"}
         run = client.actor("apify/instagram-hashtag-scraper").call(run_input=run_input)
         dataset_items = client.dataset(run["defaultDatasetId"]).list_items().items
         
         for item in dataset_items:
             results.append({
-                "Platform": "Instagram",
+                "Platform": "IG",
                 "Author": item.get("ownerUsername") or item.get("owner", {}).get("username") or "N/A",
                 "Content": item.get("caption") or "",
                 "Likes": item.get("likesCount", 0),
@@ -126,68 +96,15 @@ def scrape_instagram(client, keyword, max_items):
                 "Url": item.get("url") or item.get("postUrl") or "",
                 "Timestamp": item.get("timestamp") or item.get("takenAt") or str(datetime.now())
             })
-            
-    except Exception as e1:
-        # Fallback jika Hashtag Scraper gagal/kosong, coba via Profile Scraper
-        try:
-            run_input = {
-                "username": [clean_kw],
-                "resultsLimit": int(max_items)
-            }
-            run = client.actor("apify/instagram-post-scraper").call(run_input=run_input)
-            dataset_items = client.dataset(run["defaultDatasetId"]).list_items().items
-            
-            for item in dataset_items:
-                results.append({
-                    "Platform": "Instagram",
-                    "Author": item.get("ownerUsername") or clean_kw,
-                    "Content": item.get("caption") or "",
-                    "Likes": item.get("likesCount", 0),
-                    "Comments": item.get("commentsCount", 0),
-                    "Shares/Views": item.get("videoViewCount") or 0,
-                    "Url": item.get("url") or "",
-                    "Timestamp": item.get("timestamp") or str(datetime.now())
-                })
-        except Exception as e2:
-            st.warning(f"Kendala pada platform Instagram: {str(e1)}")
-
-    return results
-
-
-def scrape_youtube(client, keyword, max_items):
-    results = []
-    try:
-        run_input = {
-            "searchKeywords": keyword,
-            "maxResults": int(max_items)
-        }
-        run = client.actor("apify/youtube-scraper").call(run_input=run_input)
-        dataset_items = client.dataset(run["defaultDatasetId"]).list_items().items
-        
-        for item in dataset_items:
-            results.append({
-                "Platform": "YouTube",
-                "Author": item.get("channelName") or item.get("channelUrl") or "N/A",
-                "Content": f"{item.get('title', '')}\n{item.get('text', '') or item.get('description', '')}",
-                "Likes": item.get("likes", 0),
-                "Comments": item.get("commentsCount", 0),
-                "Shares/Views": item.get("viewCount", 0),
-                "Url": item.get("url") or item.get("videoUrl") or "",
-                "Timestamp": item.get("date") or str(datetime.now())
-            })
     except Exception as e:
-        st.warning(f"Kendala pada platform YouTube: {str(e)}")
+        st.warning(f"Kendala pada platform IG: {str(e)}")
     return results
-
 
 def scrape_tiktok(client, keyword, max_items):
     results = []
     clean_kw = keyword.replace("#", "").replace("@", "").strip()
     try:
-        run_input = {
-            "hashtags": [clean_kw],
-            "resultsPerPage": int(max_items)
-        }
+        run_input = {"hashtags": [clean_kw], "resultsPerPage": int(max_items)}
         run = client.actor("clockworks/free-tiktok-scraper").call(run_input=run_input)
         dataset_items = client.dataset(run["defaultDatasetId"]).list_items().items
         
@@ -206,20 +123,16 @@ def scrape_tiktok(client, keyword, max_items):
         st.warning(f"Kendala pada platform TikTok: {str(e)}")
     return results
 
-
 def scrape_twitter(client, keyword, max_items):
     results = []
     try:
-        run_input = {
-            "searchTerms": [keyword],
-            "maxItems": int(max_items)
-        }
+        run_input = {"searchTerms": [keyword], "maxItems": int(max_items)}
         run = client.actor("apify/twitter-scraper").call(run_input=run_input)
         dataset_items = client.dataset(run["defaultDatasetId"]).list_items().items
         
         for item in dataset_items:
             results.append({
-                "Platform": "Twitter/X",
+                "Platform": "X",
                 "Author": item.get("author", {}).get("userName") or "N/A",
                 "Content": item.get("full_text") or item.get("text") or "",
                 "Likes": item.get("likeCount", 0),
@@ -229,52 +142,78 @@ def scrape_twitter(client, keyword, max_items):
                 "Timestamp": item.get("createdAt") or str(datetime.now())
             })
     except Exception as e:
-        st.warning(f"Kendala pada platform Twitter/X: {str(e)}")
+        st.warning(f"Kendala pada platform X: {str(e)}")
     return results
 
-# ==========================================
-# 5. EKSEKUSI PENCARIAN & LAPORAN
-# ==========================================
+def scrape_facebook(client, keyword, max_items):
+    results = []
+    try:
+        clean_kw = keyword.replace("#", "").replace("@", "").strip()
+        # Menggunakan format pencarian hashtag FB sebagai pendekatan umum
+        run_input = {
+            "startUrls": [{"url": f"https://www.facebook.com/hashtag/{clean_kw}"}],
+            "resultsLimit": int(max_items)
+        }
+        run = client.actor("apify/facebook-posts-scraper").call(run_input=run_input)
+        dataset_items = client.dataset(run["defaultDatasetId"]).list_items().items
+        
+        for item in dataset_items:
+            results.append({
+                "Platform": "FB",
+                "Author": item.get("user", {}).get("name") or "N/A",
+                "Content": item.get("text") or "",
+                "Likes": item.get("likes", 0),
+                "Comments": item.get("comments", 0),
+                "Shares/Views": item.get("shares", 0),
+                "Url": item.get("url") or "",
+                "Timestamp": item.get("time") or str(datetime.now())
+            })
+    except Exception as e:
+        st.warning(f"Kendala pada platform FB: {str(e)}")
+    return results
 
-btn_analyze = st.button("🚀 ANALISA DATA RIIL & BUAT LAPORAN", use_container_width=True)
+
+# ==========================================
+# 4. EKSEKUSI PENCARIAN & LAPORAN
+# ==========================================
 
 if btn_analyze:
     if not apify_token:
-        st.error("❌ Mohon masukkan Apify API Token pada sidebar atau tentukan di Streamlit Secrets!")
+        st.error("❌ Mohon isi Token terlebih dahulu!")
     elif not platforms:
         st.error("❌ Silakan pilih minimal satu platform media sosial!")
     else:
         client = ApifyClient(apify_token)
         all_data = []
 
-        status_box = st.status("🔍 Mengambil data riil dari media sosial...", expanded=True)
+        status_box = st.status("🔍 Menganalisa data dari media sosial...", expanded=True)
 
         for p in platforms:
-            status_box.write(f"⏳ Mengambil data riil dari **{p}**...")
-            if p == "Instagram":
+            status_box.write(f"⏳ Mengambil data dari **{p}**...")
+            if p == "IG":
                 res = scrape_instagram(client, keyword, max_items)
-            elif p == "YouTube":
-                res = scrape_youtube(client, keyword, max_items)
             elif p == "TikTok":
                 res = scrape_tiktok(client, keyword, max_items)
-            elif p == "Twitter/X":
+            elif p == "X":
                 res = scrape_twitter(client, keyword, max_items)
+            elif p == "FB":
+                res = scrape_facebook(client, keyword, max_items)
             else:
                 res = []
             
             all_data.extend(res)
 
-        status_box.update(label="✅ Pengambilan data selesai!", state="complete", expanded=False)
+        status_box.update(label="✅ Analisa selesai!", state="complete", expanded=False)
 
         if not all_data:
-            st.error("❌ Tidak ada data riil yang ditemukan dari platform yang dipilih.")
+            st.error("❌ Tidak ada data yang ditemukan berdasarkan filter Anda.")
         else:
             df = pd.DataFrame(all_data)
             st.session_state["scraped_data"] = df
-            st.success(f"🎉 Berhasil mengambil {len(df)} data postingan!")
+            st.success(f"🎉 Berhasil menganalisa {len(df)} data postingan!")
 
 # ==========================================
-# 6. DISPLAY MULTI-TAB REPORT
+# 5. DISPLAY MULTI-TAB REPORT
 # ==========================================
 
 if "scraped_data" in st.session_state:
@@ -286,7 +225,6 @@ if "scraped_data" in st.session_state:
     with tab1:
         st.subheader("Ringkasan Performa Per Platform")
         
-        # Summary Metrics
         col_m1, col_m2, col_m3, col_m4 = st.columns(4)
         col_m1.metric("Total Postingan", len(df))
         col_m2.metric("Total Likes", f"{df['Likes'].sum():,}")
@@ -320,17 +258,15 @@ if "scraped_data" in st.session_state:
     with tab3:
         st.subheader("Unduh Laporan Data")
         
-        # Download CSV
         csv_buffer = df.to_csv(index=False).encode('utf-8')
         st.download_button(
             label="📄 Unduh Data sebagai CSV",
             data=csv_buffer,
-            file_name=f"social_media_report_{keyword}.csv",
+            file_name=f"analisa_sosmed_{keyword}.csv",
             mime="text/csv",
             use_container_width=True
         )
 
-        # Download Excel
         excel_buffer = io.BytesIO()
         with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
             df.to_excel(writer, sheet_name='Data Postingan', index=False)
@@ -339,7 +275,7 @@ if "scraped_data" in st.session_state:
         st.download_button(
             label="📊 Unduh Data sebagai Excel (.xlsx)",
             data=excel_data,
-            file_name=f"social_media_report_{keyword}.xlsx",
+            file_name=f"analisa_sosmed_{keyword}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True
         )
