@@ -23,9 +23,24 @@ st.caption("Sistem Analisis Media Sosial Profesional bertenaga Apify API & Googl
 # ==========================================
 st.sidebar.header("⚙️ Pengaturan & API Key")
 
-# Mengambil token dari Streamlit Secrets atau Input Manual
-default_apify_token = st.secrets.get("APIFY_TOKEN", "") if hasattr(st, "secrets") else ""
-apify_token = st.sidebar.text_input("Apify API Token:", value=default_apify_token, type="password")
+# Fungsi pembantu membaca token dari Secrets secara aman
+def load_apify_token():
+    try:
+        if "APIFY_TOKEN" in st.secrets:
+            return st.secrets["APIFY_TOKEN"]
+    except Exception:
+        pass
+    return ""
+
+default_apify_token = load_apify_token()
+
+# Jika token ada di secrets, jalankan di background. 
+# Jika tidak ada, tampilkan input box di sidebar.
+if default_apify_token:
+    apify_token = default_apify_token
+    st.sidebar.success("✅ Apify API Token terhubung dari Secrets (Background)!")
+else:
+    apify_token = st.sidebar.text_input("Apify API Token:", value="", type="password")
 
 st.sidebar.markdown("---")
 st.sidebar.info("💡 **Tips Pencarian Instagram:**\n- Gunakan `@nama_akun` untuk mengambil pos dari akun tertentu.\n- Gunakan `kata_kunci` atau `#hashtag` untuk mencari postingan berdasarkan topik.")
