@@ -17,11 +17,15 @@ st.set_page_config(
     layout="centered"
 )
 
+# Inisialisasi Session State agar hasil analisis tidak hilang saat rerun
+if "analytic_results" not in st.session_state:
+    st.session_state.analytic_results = None
+
 # ==========================================
-# 2. BACA STREAMLIT SECRETS
+# 2. BACA STREAMLIT SECRETS (AMAN)
 # ==========================================
 MASTER_TOKEN = st.secrets.get("ACCESS_TOKEN", "ANALYZER2026")
-FOLDER_ID = st.secrets.get("FOLDER_ID", "1NW_-L0ZQYJ2YrsDJWe90U0ZVbflQXZSk")
+FOLDER_ID = st.secrets.get("FOLDER_ID", "")
 APIFY_TOKEN = st.secrets.get("APIFY_API_TOKEN", "")
 
 SCOPES = [
@@ -33,20 +37,23 @@ SCOPES = [
 # 3. KONEKSI GOOGLE DRIVE & SHEETS API
 # ==========================================
 def get_gcp_credentials():
+    if "gcp_service_account" not in st.secrets:
+        st.error("⚠️ Secrets 'gcp_service_account' belum dikonfigurasi di Streamlit!")
+        st.stop()
     return Credentials.from_service_account_info(
         st.secrets["gcp_service_account"], scopes=SCOPES
     )
 
 def create_new_gsheet_file(title, folder_id, dict_sheets):
     """
-    Membuat file Google Sheet BARU (Save As) di Google Drive folder_id
-    dengan 10 tab sheet terpisah.
+    Membuat file Google Sheet BARU di Google Drive folder_id
+    dengan 10 tab sheet terpisah dan mengatur izin akses publik.
     """
     creds = get_gcp_credentials()
     gclient = gspread.authorize(creds)
     drive_service = build('drive', 'v3', credentials=creds)
 
-    # 1. Buat File Google Spreadsheet Baru di Folder Tujuan
+    # 1. Buat File Google Spreadsheet Baru
     file_metadata = {
         'name': title,
         'mimeType': 'application/vnd.google-apps.spreadsheet',
@@ -57,12 +64,21 @@ def create_new_gsheet_file(title, folder_id, dict_sheets):
     ).execute()
     
     sheet_id = file_res.get('id')
-    spreadsheet = gclient.open_by_key(sheet_id)
 
-    # 2. Simpan Sheet Bawaan Default
+    # 2. Buka Akses Izin File (Agar User Bisa Membuka Link Tanpa Access Denied)
+    try:
+        drive_service.permissions().create(
+            fileId=sheet_id,
+            body={'type': 'anyone', 'role': 'reader'},
+            fields='id'
+        ).execute()
+    except Exception as e:
+        st.warning(f"⚠️ Gagal mengatur izin akses publik Google Sheet: {e}")
+
+    spreadsheet = gclient.open_by_key(sheet_id)
     default_sheet = spreadsheet.sheet1
 
-    # 3. Tulis setiap tab worksheet dari Dictionary DataFrame
+    # 3. Tulis Setiap Tab Worksheet dari Dictionary DataFrame
     for sheet_name, df in dict_sheets.items():
         df_clean = df.copy()
         df_clean = df_clean.astype(str)
@@ -72,9 +88,10 @@ def create_new_gsheet_file(title, folder_id, dict_sheets):
         cols = max(len(df_clean.columns) + 5, 10)
         
         ws = spreadsheet.add_worksheet(title=sheet_name, rows=rows, cols=cols)
-        ws.update(content)
+        # Gunakan sintaks spesifik 'A1' agar kompatibel dengan seluruh versi gspread
+        ws.update('A1', content)
 
-    # 4. Hapus Sheet bawaan "Sheet1" agar rapi
+    # 4. Hapus Sheet bawaan "Sheet1"
     try:
         spreadsheet.del_worksheet(default_sheet)
     except Exception:
@@ -83,7 +100,7 @@ def create_new_gsheet_file(title, folder_id, dict_sheets):
     return spreadsheet.url
 
 # ==========================================
-# 4. MODULE SCRAPER APIFY (DATA RIIL)
+# 4. MODULE SCRAPER APIFY (AMAN & ROBUST)
 # ==========================================
 def get_apify_client():
     if not APIFY_TOKEN:
@@ -91,45 +108,49 @@ def get_apify_client():
         st.stop()
     return ApifyClient(APIFY_TOKEN)
 
+def parse_tiktok_timestamp(ts):
+    if not ts:
+        return datetime.datetime.now()
+    try:
+        ts_num = float(ts)
+        if ts_num > 1e11:  # Jika timestamp dalam milidetik
+            ts_num /= 1000.0
+        return datetime.datetime.fromtimestamp(ts_num)
+    except Exception:
+        return datetime.datetime.now()
+
 def scrape_instagram(client, keyword, max_items):
-  clean_kw = keyword.replace("#", "").replace("@", "").strip()
+    clean_kw = keyword.replace("#", "").replace("@", "").strip()
+    
+    # Pisahkan logika username dan hashtag
+    if keyword.startswith("@"):
+        run_input = {"username": [clean_kw], "resultsLimit": int(max_items)}
+    else:
+        run_input = {"hashtags": [clean_kw], "resultsLimit": int(max_items)}
 
-  # Menyediakan parameter 'username' dan 'hashtags' sekaligus agar lolos validasi Apify
-  run_input = {
-      "username": [clean_kw],
-      "hashtags": [clean_kw],
-      "resultsLimit": int(max_items),
-  }
+    run = client.actor("apify/instagram-post-scraper").call(run_input=run_input)
+    dataset = client.dataset(run["defaultDatasetId"])
 
-  run = client.actor("apify/instagram-post-scraper").call(run_input=run_input)
-  dataset = client.dataset(run["defaultDatasetId"])
-
-  parsed = []
-  for item in dataset.iterate_items():
-    ts_str = item.get("timestamp", "")
-    parsed.append({
-        "Post ID": str(item.get("id", "")),
-        "Tanggal Publish": (
-            ts_str[:10] if ts_str else str(datetime.date.today())
-        ),
-        "Waktu Publish Full": ts_str or str(datetime.datetime.now()),
-        "Platform": "Instagram",
-        "Author / Username": f"@{item.get('ownerUsername', 'unknown')}",
-        "Konten / Teks": item.get("caption", "") or "",
-        "Jumlah Likes": int(item.get("likesCount", 0) or 0),
-        "Jumlah Comments": int(item.get("commentsCount", 0) or 0),
-        "Jumlah Shares": 0,
-        "Format Konten": (
-            "Foto / Reel"
-            if "video" in str(item.get("type", "")).lower()
-            else "Foto / Image"
-        ),
-        "Hashtag Utama": keyword,
-    })
-  return pd.DataFrame(parsed)
+    parsed = []
+    for item in dataset.iterate_items():
+        ts_str = str(item.get("timestamp", ""))
+        parsed.append({
+            "Post ID": str(item.get("id", "")),
+            "Tanggal Publish": ts_str[:10] if len(ts_str) >= 10 else str(datetime.date.today()),
+            "Waktu Publish Full": ts_str or str(datetime.datetime.now()),
+            "Platform": "Instagram",
+            "Author / Username": f"@{item.get('ownerUsername', 'unknown')}",
+            "Konten / Teks": item.get("caption", "") or "",
+            "Jumlah Likes": int(item.get("likesCount", 0) or 0),
+            "Jumlah Comments": int(item.get("commentsCount", 0) or 0),
+            "Jumlah Shares": 0,
+            "Format Konten": "Foto / Reel" if "video" in str(item.get("type", "")).lower() else "Foto / Image",
+            "Hashtag Utama": keyword,
+        })
+    return pd.DataFrame(parsed)
 
 def scrape_tiktok(client, keyword, max_items):
-    clean_kw = keyword.replace("#", "").replace("@", "")
+    clean_kw = keyword.replace("#", "").replace("@", "").strip()
     run_input = {
         "searchInputs": [clean_kw],
         "resultsPerPage": int(max_items),
@@ -140,8 +161,7 @@ def scrape_tiktok(client, keyword, max_items):
     parsed = []
     for item in dataset.iterate_items():
         author = item.get("authorMeta", {}) or {}
-        create_time = item.get("createTime")
-        dt_obj = datetime.datetime.fromtimestamp(create_time) if create_time else datetime.datetime.now()
+        dt_obj = parse_tiktok_timestamp(item.get("createTime"))
         
         parsed.append({
             "Post ID": str(item.get("id", "")),
@@ -169,10 +189,10 @@ def scrape_twitter(client, keyword, max_items):
     parsed = []
     for item in dataset.iterate_items():
         author = item.get("author", {}) or {}
-        ts_str = item.get("createdAt", "")
+        ts_str = str(item.get("createdAt", ""))
         parsed.append({
             "Post ID": str(item.get("id", "")),
-            "Tanggal Publish": ts_str[:10] if ts_str else str(datetime.date.today()),
+            "Tanggal Publish": ts_str[:10] if len(ts_str) >= 10 else str(datetime.date.today()),
             "Waktu Publish Full": ts_str or str(datetime.datetime.now()),
             "Platform": "X (Twitter)",
             "Author / Username": f"@{author.get('userName', 'unknown')}",
@@ -196,17 +216,17 @@ def scrape_facebook(client, keyword, max_items):
     parsed = []
     for item in dataset.iterate_items():
         user = item.get("user", {}) or {}
-        ts_str = item.get("time", "")
+        ts_str = str(item.get("time", item.get("timestamp", "")))
         parsed.append({
             "Post ID": str(item.get("postId", item.get("id", ""))),
-            "Tanggal Publish": ts_str[:10] if ts_str else str(datetime.date.today()),
+            "Tanggal Publish": ts_str[:10] if len(ts_str) >= 10 else str(datetime.date.today()),
             "Waktu Publish Full": ts_str or str(datetime.datetime.now()),
             "Platform": "Facebook",
             "Author / Username": user.get("name", "unknown"),
             "Konten / Teks": item.get("text", "") or "",
-            "Jumlah Likes": int(item.get("likes", 0) or 0),
-            "Jumlah Comments": int(item.get("comments", 0) or 0),
-            "Jumlah Shares": int(item.get("shares", 0) or 0),
+            "Jumlah Likes": int(item.get("likes", item.get("likesCount", 0)) or 0),
+            "Jumlah Comments": int(item.get("comments", item.get("commentsCount", 0)) or 0),
+            "Jumlah Shares": int(item.get("shares", item.get("sharesCount", 0)) or 0),
             "Format Konten": "Status / Post",
             "Hashtag Utama": keyword
         })
@@ -216,13 +236,15 @@ def scrape_facebook(client, keyword, max_items):
 # 5. PEMROSESAN ANALISIS & GENERATOR 10 TAB
 # ==========================================
 def generate_professional_analytics(df_raw, topic, platforms, target_post, date_range, start_date, end_date):
-    """
-    Memproses data mentah menjadi 10 DataFrame terpisah untuk kebutuhan 10 Tab Sheet.
-    """
-    # Pastikan tipe data numerik & waktu
-    df_raw["Jumlah Likes"] = pd.to_numeric(df_raw["Jumlah Likes"], errors="coerce").fillna(0).astype(int)
-    df_raw["Jumlah Comments"] = pd.to_numeric(df_raw["Jumlah Comments"], errors="coerce").fillna(0).astype(int)
-    df_raw["Jumlah Shares"] = pd.to_numeric(df_raw["Jumlah Shares"], errors="coerce").fillna(0).astype(int)
+    if df_raw.empty:
+        return {}
+
+    # Pastikan tipe data numerik
+    for col in ["Jumlah Likes", "Jumlah Comments", "Jumlah Shares"]:
+        if col not in df_raw.columns:
+            df_raw[col] = 0
+        df_raw[col] = pd.to_numeric(df_raw[col], errors="coerce").fillna(0).astype(int)
+        
     df_raw["Total Interaksi"] = df_raw["Jumlah Likes"] + df_raw["Jumlah Comments"] + df_raw["Jumlah Shares"]
     
     # Ekstraksi jam publish (00 - 23)
@@ -231,6 +253,7 @@ def generate_professional_analytics(df_raw, topic, platforms, target_post, date_
             return pd.to_datetime(val).hour
         except Exception:
             return 12
+            
     df_raw["Jam Publish"] = df_raw["Waktu Publish Full"].apply(parse_hour)
 
     total_posts = len(df_raw)
@@ -264,7 +287,7 @@ def generate_professional_analytics(df_raw, topic, platforms, target_post, date_
         Total_Shares=("Jumlah Shares", "sum"),
         Total_Interaksi=("Total Interaksi", "sum")
     ).reset_index()
-    df_02["Avg_Interaksi_Per_Post"] = (df_02["Total_Interaksi"] / df_02["Jumlah_Post"]).round(2)
+    df_02["Avg_Interaksi_Per_Post"] = (df_02["Total_Interaksi"] / df_02["Jumlah_Post"].replace(0, 1)).round(2)
 
     # --- TAB 3: 03_Matriks_24Jam ---
     hours_df = pd.DataFrame({"Jam Publish": list(range(24))})
@@ -273,7 +296,7 @@ def generate_professional_analytics(df_raw, topic, platforms, target_post, date_
         Total_Interaksi=("Total Interaksi", "sum")
     ).reset_index()
     df_03 = pd.merge(hours_df, df_03_group, on="Jam Publish", how="left").fillna(0)
-    df_03["Jam (00-23)"] = df_03["Jam Publish"].apply(lambda x: f"{x:02d}:00 - {x:02d}:59")
+    df_03["Jam (00-23)"] = df_03["Jam Publish"].apply(lambda x: f"{int(x):02d}:00 - {int(x):02d}:59")
     threshold_peak = df_03["Total_Interaksi"].quantile(0.75)
     df_03["Status Waktu"] = df_03["Total_Interaksi"].apply(lambda x: "🔥 Prime / Peak Time" if x >= threshold_peak and x > 0 else "Normal / Off-Peak")
     df_03 = df_03[["Jam (00-23)", "Jumlah_Post", "Total_Interaksi", "Status Waktu"]]
@@ -285,7 +308,8 @@ def generate_professional_analytics(df_raw, topic, platforms, target_post, date_
     # --- TAB 5: 05_Velocity_Viral ---
     df_raw["Skor_Viralitas"] = (df_raw["Jumlah Shares"] * 3) + (df_raw["Jumlah Comments"] * 2) + df_raw["Jumlah Likes"]
     df_05 = df_raw.sort_values(by="Skor_Viralitas", ascending=False).head(50).copy()
-    df_05["Status Viral"] = df_05["Skor_Viralitas"].apply(lambda x: "🚀 High Viral Potential" if x > df_raw["Skor_Viralitas"].mean()*2 else "Moderate Velocity")
+    mean_viral = df_raw["Skor_Viralitas"].mean() if not df_raw.empty else 0
+    df_05["Status Viral"] = df_05["Skor_Viralitas"].apply(lambda x: "🚀 High Viral Potential" if x > mean_viral * 2 and x > 0 else "Moderate Velocity")
     df_05 = df_05[["Post ID", "Platform", "Author / Username", "Total Interaksi", "Skor_Viralitas", "Status Viral", "Konten / Teks"]]
 
     # --- TAB 6: 06_Hashtag_Topik ---
@@ -302,11 +326,14 @@ def generate_professional_analytics(df_raw, topic, platforms, target_post, date_
         df_06 = pd.DataFrame({"Hashtag / Kata Kunci": [topic], "Frekuensi Muncul": [total_posts]})
 
     # --- TAB 7: 07_Demografi_Lokasi ---
+    peak_hour_str = df_03.sort_values(by='Total_Interaksi', ascending=False).iloc[0]['Jam (00-23)'] if not df_03.empty else "N/A"
+    top_platform = df_raw["Platform"].value_counts().index[0] if not df_raw.empty else "N/A"
+    
     df_07 = pd.DataFrame({
         "Kategori Insight": ["Aktivitas Terbesar", "Platform Dominan", "Estimasi Usia Audiens", "Bahasa Utama", "Distribusi Gender (Est)"],
         "Kelompok / Value": [
-            f"Jam {df_03.sort_values(by='Total_Interaksi', ascending=False).iloc[0]['Jam (00-23)']}",
-            df_raw["Platform"].value_counts().index[0] if not df_raw.empty else "N/A",
+            f"Jam {peak_hour_str}",
+            top_platform,
             "18 - 34 Tahun (Mayoritas Pengguna Sosmed)",
             "Bahasa Indonesia (Dominan)",
             "52% Pria / 48% Wanita (Seimbang)"
@@ -322,10 +349,10 @@ def generate_professional_analytics(df_raw, topic, platforms, target_post, date_
 
     # --- TAB 8: 08_Bot_vs_Organik ---
     def classify_bot(row):
-        text = str(row["Konten / Teks"])
-        if len(text) < 5 or row["Jumlah Likes"] == 0:
+        text = str(row.get("Konten / Teks", ""))
+        if len(text) < 5 or row.get("Jumlah Likes", 0) == 0:
             return "Potensi Bot / Spam"
-        elif row["Total Interaksi"] > 5000:
+        elif row.get("Total Interaksi", 0) > 5000:
             return "Akun Influencer / Viral"
         else:
             return "Akun Organik Publik"
@@ -335,7 +362,7 @@ def generate_professional_analytics(df_raw, topic, platforms, target_post, date_
         Jumlah_Post=("Post ID", "count"),
         Total_Interaksi=("Total Interaksi", "sum")
     ).reset_index()
-    df_08["Persentase (%)"] = (df_08["Jumlah_Post"] / total_posts * 100).round(2)
+    df_08["Persentase (%)"] = (df_08["Jumlah_Post"] / max(total_posts, 1) * 100).round(2)
 
     # --- TAB 9: 09_Format_Konten ---
     df_09 = df_raw.groupby("Format Konten").agg(
@@ -345,12 +372,11 @@ def generate_professional_analytics(df_raw, topic, platforms, target_post, date_
         Total_Shares=("Jumlah Shares", "sum"),
         Total_Interaksi=("Total Interaksi", "sum")
     ).reset_index()
-    df_09["Rata2_Interaksi_Per_Post"] = (df_09["Total_Interaksi"] / df_09["Jumlah_Post"]).round(2)
+    df_09["Rata2_Interaksi_Per_Post"] = (df_09["Total_Interaksi"] / df_09["Jumlah_Post"].replace(0, 1)).round(2)
 
     # --- TAB 10: 10_Data_Mentah ---
     df_10 = df_raw.copy()
 
-    # Gabungkan menjadi Dictionary 10 Tab Sheet
     return {
         "01_Ringkasan": df_01,
         "02_Tren_Harian": df_02,
@@ -365,7 +391,6 @@ def generate_professional_analytics(df_raw, topic, platforms, target_post, date_
     }
 
 def convert_dict_to_excel(dict_sheets):
-    """Ekspor seluruh 10 tab ke dalam satu file Excel (.xlsx) Multi-Tab"""
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         for sheet_name, df in dict_sheets.items():
@@ -441,7 +466,7 @@ st.markdown("---")
 if st.button("🚀 ANALISA DATA RIIL & BUAT LAPORAN"):
     # VALIDASI KEAMANAN & INPUT
     if token_user != MASTER_TOKEN:
-        st.error("❌ Token Akses salah atau kosong! Pembacaan dan eksekusi ditolak. Gunakan token 'ANALYZER2026'.")
+        st.error(f"❌ Token Akses salah atau kosong! Pembacaan dan eksekusi ditolak.")
     elif not kata_kunci:
         st.warning("⚠️ Silakan masukkan Topik / Hashtag / Nama Akun terlebih dahulu.")
     elif not medsos:
@@ -496,56 +521,72 @@ if st.button("🚀 ANALISA DATA RIIL & BUAT LAPORAN"):
                     new_sheet_title, FOLDER_ID, dict_analytic_sheets
                 )
 
-                st.success(f"✅ Analisa Selesai! Berhasil menarik {len(df_filtered)} data riil dan menyimpan file laporan baru.")
+                # Simpan Hasil Ke Session State Agar Tampilan Tidak Hilang Saat Rerun
+                st.session_state.analytic_results = {
+                    "df_filtered": df_filtered,
+                    "dict_analytic_sheets": dict_analytic_sheets,
+                    "sheet_url": sheet_url,
+                    "new_sheet_title": new_sheet_title
+                }
 
-                # Tampilkan Link & Download
-                c_link, c_down = st.columns(2)
-                with c_link:
-                    st.markdown(f"🔗 **[Buka File Google Sheet Hasil Analisis]({sheet_url})**")
-                with c_down:
-                    excel_bytes = convert_dict_to_excel(dict_analytic_sheets)
-                    st.download_button(
-                        label="💾 Download File Excel 10-Tab (.xlsx)",
-                        data=excel_bytes,
-                        file_name=f"{new_sheet_title}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    )
+# ==========================================
+# 7. MENAMPILKAN DASHBOARD (JIKA ADA DATA)
+# ==========================================
+if st.session_state.analytic_results is not None:
+    res = st.session_state.analytic_results
+    df_filtered = res["df_filtered"]
+    dict_analytic_sheets = res["dict_analytic_sheets"]
+    sheet_url = res["sheet_url"]
+    new_sheet_title = res["new_sheet_title"]
 
-                st.markdown("---")
+    st.success(f"✅ Analisa Selesai! Berhasil menarik {len(df_filtered)} data riil dan menyimpan file laporan baru.")
 
-                # ==========================================
-                # VISUALISASI DASHBOARD DI STREAMLIT
-                # ==========================================
-                st.subheader("📈 Ringkasan Eksekutif Hasil Analisis")
-                
-                m1, m2, m3, m4 = st.columns(4)
-                total_eng = df_filtered["Total Interaksi"].sum()
-                m1.metric("Total Posts Ditarik", len(df_filtered))
-                m2.metric("Total Engagement", f"{total_eng:,}")
-                m3.metric("Total Likes", f"{df_filtered['Jumlah Likes'].sum():,}")
-                m4.metric("Total Shares/Retweets", f"{df_filtered['Jumlah Shares'].sum():,}")
+    # Tampilkan Link & Download
+    c_link, c_down = st.columns(2)
+    with c_link:
+        st.markdown(f"🔗 **[Buka File Google Sheet Hasil Analisis]({sheet_url})**")
+    with c_down:
+        excel_bytes = convert_dict_to_excel(dict_analytic_sheets)
+        st.download_button(
+            label="💾 Download File Excel 10-Tab (.xlsx)",
+            data=excel_bytes,
+            file_name=f"{new_sheet_title}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
 
-                # Tab Preview Tampilan Streamlit
-                st_tab1, st_tab2, st_tab3, st_tab4, st_tab5 = st.tabs([
-                    "📊 Tren Harian", "⏰ Matriks 24 Jam", "🏆 Top Posts", "📱 Format Konten", "📋 Raw Data"
-                ])
+    st.markdown("---")
 
-                with st_tab1:
-                    st.subheader("Tren Interaksi Harian")
-                    st.bar_chart(dict_analytic_sheets["02_Tren_Harian"].set_index("Tanggal Publish")["Total_Interaksi"])
+    # Visualisasi Dashboard Streamlit
+    st.subheader("📈 Ringkasan Eksekutif Hasil Analisis")
+    
+    m1, m2, m3, m4 = st.columns(4)
+    total_eng = df_filtered["Total Interaksi"].sum()
+    m1.metric("Total Posts Ditarik", len(df_filtered))
+    m2.metric("Total Engagement", f"{total_eng:,}")
+    m3.metric("Total Likes", f"{df_filtered['Jumlah Likes'].sum():,}")
+    m4.metric("Total Shares/Retweets", f"{df_filtered['Jumlah Shares'].sum():,}")
 
-                with st_tab2:
-                    st.subheader("Waktu Terbaik Posting (Prime Time)")
-                    st.line_chart(dict_analytic_sheets["03_Matriks_24Jam"].set_index("Jam (00-23)")["Total_Interaksi"])
+    # Tab Preview Tampilan Streamlit
+    st_tab1, st_tab2, st_tab3, st_tab4, st_tab5 = st.tabs([
+        "📊 Tren Harian", "⏰ Matriks 24 Jam", "🏆 Top Posts", "📱 Format Konten", "📋 Raw Data"
+    ])
 
-                with st_tab3:
-                    st.subheader("5 Postingan Terpopuler")
-                    st.dataframe(dict_analytic_sheets["04_Top_Engagement"].head(5), use_container_width=True)
+    with st_tab1:
+        st.subheader("Tren Interaksi Harian")
+        st.bar_chart(dict_analytic_sheets["02_Tren_Harian"].set_index("Tanggal Publish")["Total_Interaksi"])
 
-                with st_tab4:
-                    st.subheader("Performa Berdasarkan Format Konten")
-                    st.dataframe(dict_analytic_sheets["09_Format_Konten"], use_container_width=True)
+    with st_tab2:
+        st.subheader("Waktu Terbaik Posting (Prime Time)")
+        st.line_chart(dict_analytic_sheets["03_Matriks_24Jam"].set_index("Jam (00-23)")["Total_Interaksi"])
 
-                with st_tab5:
-                    st.subheader("Data Mentah Hasil Scraping")
-                    st.dataframe(dict_analytic_sheets["10_Data_Mentah"], use_container_width=True)
+    with st_tab3:
+        st.subheader("5 Postingan Terpopuler")
+        st.dataframe(dict_analytic_sheets["04_Top_Engagement"].head(5), use_container_width=True)
+
+    with st_tab4:
+        st.subheader("Performa Berdasarkan Format Konten")
+        st.dataframe(dict_analytic_sheets["09_Format_Konten"], use_container_width=True)
+
+    with st_tab5:
+        st.subheader("Data Mentah Hasil Scraping")
+        st.dataframe(dict_analytic_sheets["10_Data_Mentah"], use_container_width=True)
