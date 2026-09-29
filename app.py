@@ -67,36 +67,28 @@ btn_analyze = st.button("ANALISA")
 # 3. KONFIGURASI INSTAGRAPI & SESI
 # ==========================================
 
+# Ambil kredensial dari Streamlit Secrets / Variabel
 IG_USERNAME = "analisamediasosialmu"
 IG_PASSWORD = "928272Mi@"
-SESSION_FILE = "ig_session.json"
+IG_SESSION_ID = st.secrets.get("IG_SESSION_ID", "")
 
 def get_instagrapi_client():
     """
-    Inisialisasi instagrapi Client dengan User-Agent terbaru & pembersihan sesi lama.
+    Inisialisasi instagrapi menggunakan Cookie sessionid dari Browser.
     """
     cl = Client()
     cl.delay_range = [2, 5]
     
-    # 1. Paksa hapus file sesi lama dari server jika masih ada
-    if os.path.exists(SESSION_FILE):
+    # 1. Prioritaskan login via sessionid jika tersedia
+    if IG_SESSION_ID:
         try:
-            os.remove(SESSION_FILE)
-        except Exception:
-            pass
-
-    # 2. Set User-Agent versi Instagram Android terbaru untuk melewati penolakan versi
-    try:
-        cl.set_user_agent(
-            "Instagram 317.0.0.34.109 Android (33/13; 420dpi; 1080x2400; Xiaomi; M2007J20CG; surya; qcom; id_ID; 568360662)"
-        )
-    except Exception:
-        pass
-
-    # 3. Login ulang & simpan sesi baru
+            cl.login_by_sessionid(IG_SESSION_ID)
+            return cl
+        except Exception as e:
+            st.warning(f"Sesi cookie expired, mencoba login password: {e}")
+            
+    # 2. Fallback jika sessionid tidak ada/expired
     cl.login(IG_USERNAME, IG_PASSWORD)
-    cl.dump_settings(SESSION_FILE)
-        
     return cl
 
 
