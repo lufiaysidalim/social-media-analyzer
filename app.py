@@ -20,7 +20,6 @@ st.set_page_config(
 # ==========================================
 MASTER_TOKEN = st.secrets.get("ACCESS_TOKEN", "ANALYZER2026")
 
-# ID diambil dari Secrets atau Default langsung di latar belakang
 MASTER_SHEET_ID = st.secrets.get("MASTER_SHEET_ID", "1VHYJQJqBVt-W95oqx5vCioMkIPJQEnJvef-X2XqJiko")
 TARGET_FOLDER_ID = st.secrets.get("FOLDER_ID", "1NW_-L0ZQYJ2YrsDJWe90UZbflQXZSk")
 
@@ -40,12 +39,13 @@ def init_services():
     return client, drive_service
 
 
-def create_new_gsheet_from_master(
-    topic, platforms, post_count, date_range, start_date, end_date, master_id, folder_id
+def create_new_gsheet(
+    topic, platforms, post_count, date_range, start_date, end_date, folder_id
 ):
     """
-    1. Meng-copy Master Google Sheet menjadi FILE BARU di folder target
-    2. Mengisi data hasil analisa ke FILE BARU tersebut
+    1. Membuat File GSheet Baru via GSpread (Bebas Quota Limit Service Account)
+    2. Memindahkan file baru ke Folder Target di Drive
+    3. Mengisi data hasil analisa ke file tersebut
     """
     client, drive_service = init_services()
 
@@ -53,23 +53,25 @@ def create_new_gsheet_from_master(
     clean_topic = topic.replace(" ", "_").replace("#", "").replace("@", "")
     new_filename = f"Data_Analisis_{clean_topic}_{timestamp}"
 
-    # 1. Duplikasi Master File menjadi File GSheet Baru di Folder Target
-    copy_body = {
-        "name": new_filename,
-        "parents": [folder_id] if folder_id else []
-    }
-    
-    copied_file = drive_service.files().copy(
-        fileId=master_id,
-        body=copy_body,
-        fields="id, webViewLink"
-    ).execute()
+    # 1. Buat Spreadsheet Baru via GSpread (Bebas Kuota Limit Drive)
+    spreadsheet = client.create(new_filename)
+    new_file_id = spreadsheet.id
+    new_sheet_url = spreadsheet.url
 
-    new_file_id = copied_file.get("id")
-    new_sheet_url = copied_file.get("webViewLink")
-
-    # 2. Buka File BARU menggunakan GSpread
-    spreadsheet = client.open_by_key(new_file_id)
+    # 2. Pindahkan Spreadsheet Baru ke dalam Folder Target
+    if folder_id:
+        try:
+            file_meta = drive_service.files().get(fileId=new_file_id, fields="parents").execute()
+            previous_parents = ",".join(file_meta.get("parents", []))
+            
+            drive_service.files().update(
+                fileId=new_file_id,
+                addParents=folder_id,
+                removeParents=previous_parents,
+                fields="id, parents"
+            ).execute()
+        except Exception as e:
+            st.warning(f"File berhasil dibuat, tetapi gagal dipindahkan ke folder: {e}")
 
     # 3. Buat Data Parameter & Data Mentah
     df_parameter = pd.DataFrame({
@@ -153,7 +155,7 @@ def convert_df_to_excel(df_param, df_data):
 
 
 # ==========================================
-# 3. TAMPILAN FRONTEND STREAMLIT (BERSIH)
+# 3. TAMPILAN FRONTEND STREAMLIT
 # ==========================================
 st.title("📊 Social Media Analyzer")
 st.write("Masukkan parameter di bawah ini untuk memulai analisa:")
@@ -202,16 +204,15 @@ if st.button("🚀 ANALISA"):
     elif token_user != MASTER_TOKEN and token_user != "":
         st.error("❌ Token Akses salah! Gunakan token yang sesuai.")
     else:
-        with st.spinner("Menduplikasi Master Sheet & mengisi data baru..."):
+        with st.spinner("Membuat file GSheet baru & mengisi data..."):
             try:
-                sheet_url, filename, df_param, df_data = create_new_gsheet_from_master(
+                sheet_url, filename, df_param, df_data = create_new_gsheet(
                     topic=kata_kunci,
                     platforms=medsos,
                     post_count=jumlah_post,
                     date_range=rentang_waktu,
                     start_date=tgl_mulai,
                     end_date=tgl_selesai,
-                    master_id=MASTER_SHEET_ID,
                     folder_id=TARGET_FOLDER_ID
                 )
 
