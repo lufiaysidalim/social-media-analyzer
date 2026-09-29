@@ -67,29 +67,92 @@ btn_analyze = st.button("ANALISA")
 # 3. KONFIGURASI INSTAGRAPI & SESI
 # ==========================================
 
-# Ambil kredensial dari Streamlit Secrets / Variabel
 IG_USERNAME = "analisamediasosialmu"
 IG_PASSWORD = "928272Mi@"
-IG_SESSION_ID = st.secrets.get("IG_SESSION_ID", "")
+SESSION_FILE = "ig_session.json"  # <--- Didefinisikan agar tidak timbul NameError
 
 def get_instagrapi_client():
     """
-    Inisialisasi instagrapi menggunakan Cookie sessionid dari Browser.
+    Inisialisasi instagrapi Client dengan Session ID & Fallback Login.
     """
     cl = Client()
     cl.delay_range = [2, 5]
     
-    # 1. Prioritaskan login via sessionid jika tersedia
-    if IG_SESSION_ID:
+    # Ambil session ID dari secrets dan bersihkan karakter spasi
+    session_id = str(st.secrets.get("IG_SESSION_ID", "")).strip()
+    
+    if session_id:
         try:
-            cl.login_by_sessionid(IG_SESSION_ID)
+            cl.login_by_sessionid(session_id)
             return cl
         except Exception as e:
-            st.warning(f"Sesi cookie expired, mencoba login password: {e}")
-            
-    # 2. Fallback jika sessionid tidak ada/expired
-    cl.login(IG_USERNAME, IG_PASSWORD)
+            st.warning(f"⚠️ Login via IG_SESSION_ID gagal/kedaluwarsa ({e}). Membuka opsi login alternatif...")
+
+    # Fallback jika IG_SESSION_ID tidak ada atau gagal
+    try:
+        cl.login(IG_USERNAME, IG_PASSWORD)
+    except Exception as e:
+        st.error(f"❌ Gagal melakukan autentikasi ke Instagram: {e}")
+        
     return cl
+
+
+# ==========================================
+# 4. FUNGSI SCRAPER INSTAGRAM
+# ==========================================
+
+def scrape_instagram_instagrapi(keyword, scrape_limit):
+    """
+    Penarikan data Instagram menggunakan instagrapi.
+    """
+    clean_kw = keyword.replace("#", "").replace("@", "").strip()
+    results = []
+    safe_limit = min(scrape_limit, 300)
+    
+    try:
+        cl = get_instagrapi_client()
+        medias = []
+        
+        # 1. Scraping Berdasarkan Username (@username)
+        if keyword.startswith("@"):
+            user_id = cl.user_id_from_username(clean_kw)
+            medias = cl.user_medias(user_id, amount=safe_limit)
+        # 2. Scraping Berdasarkan Hashtag/Topik (#hashtag)
+        else:
+            medias = cl.hashtag_medias_recent(clean_kw, amount=safe_limit)
+
+        for item in medias:
+            views = getattr(item, 'view_count', 0) or getattr(item, 'play_count', 0) or 0
+            author_username = item.user.username if (item.user and hasattr(item.user, 'username')) else clean_kw
+            
+            results.append({
+                "Platform": "Instagram",
+                "Author": author_username,
+                "Followers": "N/A",
+                "Account_Created": "N/A", 
+                "Content": item.caption_text or "",
+                "Likes": item.like_count or 0,
+                "Comments": item.comment_count or 0,
+                "Shares/Views": views,
+                "Url": f"https://www.instagram.com/p/{item.code}/",
+                "Timestamp": item.taken_at.isoformat() if item.taken_at else str(datetime.now(timezone.utc))
+            })
+
+    except PleaseWaitFewMinutes:
+        st.error("⚠️ **Instagram Rate Limit**: Instagram membatasi akses sementara. Silakan tunggu 5-10 menit.")
+    except ChallengeRequired:
+        st.error("⚠️ **Verifikasi Diperlukan**: Buka aplikasi/browser Instagram untuk memverifikasi lokasi login.")
+    except LoginRequired:
+        if os.path.exists(SESSION_FILE):
+            try:
+                os.remove(SESSION_FILE)
+            except Exception:
+                pass
+        st.error("⚠️ **Sesi Instagram Kedaluwarsa**: Silakan perbarui nilai `IG_SESSION_ID` di Streamlit Secrets dengan `sessionid` terbaru dari browser.")
+    except Exception as e:
+        st.warning(f"Kendala pada platform Instagram: {str(e)}")
+
+    return results
 
 
 # ==========================================
