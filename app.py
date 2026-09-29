@@ -4,6 +4,17 @@ import plotly.express as px
 from apify_client import ApifyClient
 from datetime import datetime, timedelta, timezone
 import io
+import os
+import time
+
+# Import instagrapi dan exception handling-nya
+from instagrapi import Client
+from instagrapi.exceptions import (
+    ChallengeRequired,
+    PleaseWaitFewMinutes,
+    LoginRequired,
+    ClientError
+)
 
 # ==========================================
 # 1. KONFIGURASI HALAMAN STREAMLIT
@@ -15,7 +26,7 @@ st.set_page_config(
 )
 
 st.title("📊 Social Media Analyzer Pro")
-st.caption("Sistem Analisis Media Sosial Profesional bertenaga Apify API dengan Filter Waktu & Engagement Tinggi.")
+st.caption("Sistem Analisis Media Sosial Profesional bertenaga instagrapi (Instagram) & Apify API (TikTok, X, FB).")
 
 # ==========================================
 # 2. FORM INPUT UTAMA
@@ -38,7 +49,7 @@ with col3:
     filter_time = st.selectbox("Rentang Waktu:", filter_time_options, index=2)
 
 with col4:
-    raw_limit = st.number_input("Batas Tarik Raw Data:", min_value=1000, max_value=5000000, value=500000, step=50000)
+    raw_limit = st.number_input("Batas Tarik Raw Data:", min_value=10, max_value=5000000, value=500, step=50)
 
 start_date, end_date = None, None
 if filter_time == "Custom":
@@ -53,7 +64,39 @@ btn_analyze = st.button("ANALISA")
 
 
 # ==========================================
-# 3. FUNGSI BANTUAN & SCRAPER PER PLATFORM
+# 3. KONFIGURASI INSTAGRAPI & SESI
+# ==========================================
+
+IG_USERNAME = "analisamediasosialmu"
+IG_PASSWORD = "928272Mi@"
+SESSION_FILE = "ig_session.json"
+
+def get_instagrapi_client():
+    """
+    Inisialisasi instagrapi Client dengan Manajemen Sesi & Anti-Ban Delay.
+    """
+    cl = Client()
+    # Menambahkan jeda acak 2-5 detik antar request untuk meniru perilaku manusia
+    cl.delay_range = [2, 5]
+    
+    session_loaded = False
+    if os.path.exists(SESSION_FILE):
+        try:
+            cl.load_settings(SESSION_FILE)
+            cl.login(IG_USERNAME, IG_PASSWORD)
+            session_loaded = True
+        except Exception:
+            session_loaded = False
+
+    if not session_loaded:
+        cl.login(IG_USERNAME, IG_PASSWORD)
+        cl.dump_settings(SESSION_FILE)
+        
+    return cl
+
+
+# ==========================================
+# 4. FUNGSI BANTUAN & SCRAPER PER PLATFORM
 # ==========================================
 
 def get_dataset_id(run):
@@ -118,40 +161,59 @@ def filter_by_time_range(df, filter_time, start_date=None, end_date=None):
     return filtered.drop(columns=['ParsedTime'], errors='ignore')
 
 
-def scrape_instagram(client, keyword, scrape_limit):
+def scrape_instagram_instagrapi(keyword, scrape_limit):
+    """
+    Penarikan data Instagram menggunakan instagrapi (bebas biaya Apify).
+    """
     clean_kw = keyword.replace("#", "").replace("@", "").strip()
     results = []
+    
+    # Batasi jumlah scraping aman per panggilan (max 300-500) demi keamanan akun
+    safe_limit = min(scrape_limit, 300)
+    
     try:
-        if keyword.startswith("@"):
-            run_input = {"usernames": [clean_kw], "resultsLimit": scrape_limit}
-            run = client.actor("apify/instagram-scraper").call(run_input=run_input)
-        else:
-            # PERBAIKAN: resultsType diubah menjadi "posts" agar valid
-            run_input = {
-                "hashtags": [clean_kw.replace(" ", "")], 
-                "resultsLimit": scrape_limit,
-                "resultsType": "posts"
-            }
-            run = client.actor("apify/instagram-hashtag-scraper").call(run_input=run_input)
-
-        dataset_id = get_dataset_id(run)
+        cl = get_instagrapi_client()
+        medias = []
         
-        # Menggunakan iterate_items() untuk membaca seluruh dataset
-        for item in client.dataset(dataset_id).iterate_items():
+        # 1. Scraping Berdasarkan Username (@username)
+        if keyword.startswith("@"):
+            user_id = cl.user_id_from_username(clean_kw)
+            medias = cl.user_medias(user_id, amount=safe_limit)
+        # 2. Scraping Berdasarkan Hashtag/Topik (#hashtag)
+        else:
+            medias = cl.hashtag_medias_recent(clean_kw, amount=safe_limit)
+
+        for item in medias:
+            # Ambil nilai penonton/views jika media berbentuk Reel atau Video
+            views = getattr(item, 'view_count', 0) or getattr(item, 'play_count', 0) or 0
+            
+            author_username = item.user.username if (item.user and hasattr(item.user, 'username')) else clean_kw
+            
             results.append({
                 "Platform": "Instagram",
-                "Author": item.get("ownerUsername") or item.get("owner", {}).get("username") or clean_kw,
-                "Followers": item.get("owner", {}).get("followersCount", "N/A"),
+                "Author": author_username,
+                "Followers": "N/A",
                 "Account_Created": "N/A", 
-                "Content": item.get("caption") or "",
-                "Likes": item.get("likesCount", 0) or 0,
-                "Comments": item.get("commentsCount", 0) or 0,
-                "Shares/Views": item.get("videoViewCount") or item.get("videoPlayCount") or item.get("playsCount") or 0,
-                "Url": item.get("url") or item.get("postUrl") or f"https://instagram.com/p/{item.get('shortCode', '')}",
-                "Timestamp": item.get("timestamp") or item.get("takenAt") or str(datetime.now(timezone.utc))
+                "Content": item.caption_text or "",
+                "Likes": item.like_count or 0,
+                "Comments": item.comment_count or 0,
+                "Shares/Views": views,
+                "Url": f"https://www.instagram.com/p/{item.code}/",
+                "Timestamp": item.taken_at.isoformat() if item.taken_at else str(datetime.now(timezone.utc))
             })
+
+    except PleaseWaitFewMinutes:
+        st.error("⚠️ **Instagram Rate Limit**: Instagram membatasi akses sementara. Silakan tunggu 5-10 menit sebelum mencoba kembali.")
+    except ChallengeRequired:
+        st.error("⚠️ **Verifikasi Diperlukan**: Instagram meminta verifikasi keamanan. Silakan buka aplikasi Instagram di ponsel dengan akun `@analisamediasosialmu` untuk menyetujui login.")
+    except LoginRequired:
+        # Hapus sesi usang jika login gagal dan minta login ulang pada run berikutnya
+        if os.path.exists(SESSION_FILE):
+            os.remove(SESSION_FILE)
+        st.error("⚠️ **Sesi Login Kedaluwarsa**: Sesi direset. Silakan tekan tombol 'ANALISA' kembali.")
     except Exception as e:
-        st.warning(f"Kendala pada platform Instagram: {str(e)}")
+        st.warning(f"Kendala pada platform Instagram (instagrapi): {str(e)}")
+
     return results
 
 def scrape_tiktok(client, keyword, scrape_limit):
@@ -254,7 +316,7 @@ def scrape_facebook(client, keyword, scrape_limit):
 
 
 # ==========================================
-# 4. EKSEKUSI PENCARIAN & LAPORAN
+# 5. EKSEKUSI PENCARIAN & LAPORAN
 # ==========================================
 
 if btn_analyze:
@@ -263,78 +325,78 @@ if btn_analyze:
     elif not platforms:
         st.error("❌ Silakan pilih minimal satu platform media sosial!")
     else:
-        try:
-            APIFY_PERMANENT_TOKEN = st.secrets["APIFY_API_TOKEN"]
-        except Exception:
-            APIFY_PERMANENT_TOKEN = ""
+        APIFY_PERMANENT_TOKEN = st.secrets.get("APIFY_API_TOKEN", "")
+        all_raw_data = []
 
-        if not APIFY_PERMANENT_TOKEN:
-            st.error("❌ APIFY_API_TOKEN belum disetting di Streamlit Secrets.")
-        else:
-            client = ApifyClient(APIFY_PERMANENT_TOKEN)
-            all_raw_data = []
+        status_box = st.status(f"🔍 Mengambil data mentah untuk database awal...", expanded=True)
 
-            status_box = st.status(f"🔍 Mengambil {raw_limit:,} data mentah untuk database awal...", expanded=True)
-
-            # 1. Jalankan Scrape data mentah sebanyak input `raw_limit`
-            for p in platforms:
-                status_box.write(f"⏳ Mengekstrak maksimal {raw_limit:,} data dari **{p}**...")
-                if p == "Instagram":
-                    res = scrape_instagram(client, keyword, raw_limit)
-                elif p == "TikTok":
-                    res = scrape_tiktok(client, keyword, raw_limit)
-                elif p == "X(Twitter)":
-                    res = scrape_twitter(client, keyword, raw_limit)
-                elif p == "Facebook":
-                    res = scrape_facebook(client, keyword, raw_limit)
-                else:
-                    res = []
-                
-                all_raw_data.extend(res)
-
-            if not all_raw_data:
-                status_box.update(label="❌ Gagal mengambil data.", state="error", expanded=False)
-                st.error("❌ Tidak ada data yang ditemukan dari platform yang dipilih.")
+        for p in platforms:
+            status_box.write(f"⏳ Mengekstrak data dari **{p}**...")
+            
+            if p == "Instagram":
+                # Menggunakan instagrapi
+                res = scrape_instagram_instagrapi(keyword, raw_limit)
             else:
-                df_raw = pd.DataFrame(all_raw_data)
-                
-                # 2. Jalankan Filter Berdasarkan Rentang Waktu
-                status_box.write(f"⏳ Total {len(df_raw):,} data berhasil ditarik. Menerapkan filter rentang waktu: {filter_time}...")
-                df_time_filtered = filter_by_time_range(df_raw, filter_time, start_date, end_date)
-                
-                if df_time_filtered.empty:
-                    status_box.update(label="⚠️ Tidak ada data dalam rentang waktu.", state="error", expanded=False)
-                    st.warning("⚠️ Ditemukan data dari API, tetapi tidak ada yang masuk dalam rentang waktu yang dipilih.")
+                # Menggunakan Apify untuk platform selain Instagram
+                if not APIFY_PERMANENT_TOKEN:
+                    st.error(f"❌ APIFY_API_TOKEN belum disetting di Streamlit Secrets untuk platform {p}.")
+                    res = []
                 else:
-                    # 3. Hitung Skor Engagement (Likes + Comments + Shares/Views)
-                    status_box.write("⏳ Menghitung & mengurutkan skor engagement tertinggi...")
-                    df_time_filtered['Likes'] = pd.to_numeric(df_time_filtered['Likes'], errors='coerce').fillna(0)
-                    df_time_filtered['Comments'] = pd.to_numeric(df_time_filtered['Comments'], errors='coerce').fillna(0)
-                    df_time_filtered['Shares/Views'] = pd.to_numeric(df_time_filtered['Shares/Views'], errors='coerce').fillna(0)
-                    
-                    df_time_filtered['Engagement_Score'] = (
-                        df_time_filtered['Likes'] + 
-                        df_time_filtered['Comments'] + 
-                        df_time_filtered['Shares/Views']
-                    )
-                    
-                    # 4. Urutkan berdasarkan Engagement Tertinggi
-                    df_sorted = df_time_filtered.sort_values(by='Engagement_Score', ascending=False)
-                    
-                    # 5. Filter Jumlah Postingan Terakhir (Top N) untuk Ditampilkan
-                    if max_items_selection == "-":
-                        df_final = df_sorted.reset_index(drop=True)
+                    client = ApifyClient(APIFY_PERMANENT_TOKEN)
+                    if p == "TikTok":
+                        res = scrape_tiktok(client, keyword, raw_limit)
+                    elif p == "X(Twitter)":
+                        res = scrape_twitter(client, keyword, raw_limit)
+                    elif p == "Facebook":
+                        res = scrape_facebook(client, keyword, raw_limit)
                     else:
-                        df_final = df_sorted.head(int(max_items_selection)).reset_index(drop=True)
-                    
-                    # Simpan data tersaring ke memori Streamlit
-                    st.session_state["scraped_data"] = df_final
-                    status_box.update(label="✅ Analisa & penyaringan selesai!", state="complete", expanded=False)
-                    st.success(f"🎉 Berhasil memproses data! Dari {len(df_raw):,} raw data yang ditarik, {len(df_final)} postingan dengan engagement tertinggi ditampilkan.")
+                        res = []
+            
+            all_raw_data.extend(res)
+
+        if not all_raw_data:
+            status_box.update(label="❌ Gagal mengambil data.", state="error", expanded=False)
+            st.error("❌ Tidak ada data yang ditemukan dari platform yang dipilih.")
+        else:
+            df_raw = pd.DataFrame(all_raw_data)
+            
+            # 2. Jalankan Filter Berdasarkan Rentang Waktu
+            status_box.write(f"⏳ Total {len(df_raw):,} data berhasil ditarik. Menerapkan filter rentang waktu: {filter_time}...")
+            df_time_filtered = filter_by_time_range(df_raw, filter_time, start_date, end_date)
+            
+            if df_time_filtered.empty:
+                status_box.update(label="⚠️ Tidak ada data dalam rentang waktu.", state="error", expanded=False)
+                st.warning("⚠️ Ditemukan data dari API, tetapi tidak ada yang masuk dalam rentang waktu yang dipilih.")
+            else:
+                # 3. Hitung Skor Engagement (Likes + Comments + Shares/Views)
+                status_box.write("⏳ Menghitung & mengurutkan skor engagement tertinggi...")
+                df_time_filtered['Likes'] = pd.to_numeric(df_time_filtered['Likes'], errors='coerce').fillna(0)
+                df_time_filtered['Comments'] = pd.to_numeric(df_time_filtered['Comments'], errors='coerce').fillna(0)
+                df_time_filtered['Shares/Views'] = pd.to_numeric(df_time_filtered['Shares/Views'], errors='coerce').fillna(0)
+                
+                df_time_filtered['Engagement_Score'] = (
+                    df_time_filtered['Likes'] + 
+                    df_time_filtered['Comments'] + 
+                    df_time_filtered['Shares/Views']
+                )
+                
+                # 4. Urutkan berdasarkan Engagement Tertinggi
+                df_sorted = df_time_filtered.sort_values(by='Engagement_Score', ascending=False)
+                
+                # 5. Filter Jumlah Postingan Terakhir (Top N) untuk Ditampilkan
+                if max_items_selection == "-":
+                    df_final = df_sorted.reset_index(drop=True)
+                else:
+                    df_final = df_sorted.head(int(max_items_selection)).reset_index(drop=True)
+                
+                # Simpan data tersaring ke memori Streamlit
+                st.session_state["scraped_data"] = df_final
+                status_box.update(label="✅ Analisa & penyaringan selesai!", state="complete", expanded=False)
+                st.success(f"🎉 Berhasil memproses data! Dari {len(df_raw):,} raw data yang ditarik, {len(df_final)} postingan dengan engagement tertinggi ditampilkan.")
 
 
 # ==========================================
-# 5. DISPLAY MULTI-TAB REPORT
+# 6. DISPLAY MULTI-TAB REPORT
 # ==========================================
 
 if "scraped_data" in st.session_state:
