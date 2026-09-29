@@ -11,7 +11,7 @@ import io
 st.set_page_config(
     page_title="Social Media Analyzer Pro",
     page_icon="📊",
-    layout="centered"
+    layout="wide"
 )
 
 st.title("📊 Social Media Analyzer Pro")
@@ -21,21 +21,25 @@ st.caption("Sistem Analisis Media Sosial Profesional bertenaga Apify API dengan 
 # 2. FORM INPUT UTAMA
 # ==========================================
 
-keyword = st.text_input("Topik / Hashtag / Nama Akun:", value="metrologi")
+keyword = st.text_input("Topik / Hashtag / Nama Akun:", value="viral")
 st.info("💡 **Tips Input:** Gunakan `@` untuk Akun (contoh: @jokowi), `#` untuk Hashtag (contoh: #metrologi), atau ketik langsung untuk Topik (contoh: metrologi).")
 
-col1, col2, col3 = st.columns(3)
+col1, col2, col3, col4 = st.columns(4)
 
 with col1:
     platforms = st.multiselect("Platform:", ["Facebook", "Instagram", "TikTok", "X(Twitter)"], default=["Instagram"])
 
 with col2:
     max_items_options = [10, 20, 50, 100, 500, 1000, "-"]
-    max_items_selection = st.selectbox("Jumlah Postingan (Top Engagement):", max_items_options, index=0)
+    max_items_selection = st.selectbox("Tampilkan Top Postingan:", max_items_options, index=0)
 
 with col3:
     filter_time_options = ["1 Hari", "1 Minggu", "1 Bulan", "3 Bulan", "6 Bulan", "1 Tahun", "5 Tahun", "Custom", "-"]
     filter_time = st.selectbox("Rentang Waktu:", filter_time_options, index=2)
+
+with col4:
+    # FITUR BARU: Buka keran limit sebanyak-banyaknya untuk mencari postingan engagement tinggi di masa lalu
+    raw_limit = st.number_input("Batas Tarik Raw Data:", min_value=100, max_value=5000000, value=5000, step=1000)
 
 start_date, end_date = None, None
 if filter_time == "Custom":
@@ -114,18 +118,6 @@ def filter_by_time_range(df, filter_time, start_date=None, end_date=None):
 
     return filtered.drop(columns=['ParsedTime'], errors='ignore')
 
-def determine_scrape_limit(max_items_val, filter_time_val):
-    """Menentukan batas pengambilan data awal (database) sebelum difilter."""
-    if filter_time_val != "-":
-        # Jika ada filter waktu, ambil data mentah dalam jumlah besar agar tidak kehilangan post tinggi engagement
-        # Apify memakan kredit, jadi kita batasi max 1000 untuk keamanan scraping
-        if max_items_val == "-":
-            return 1000 
-        else:
-            return min(max(int(max_items_val) * 5, 200), 1500)
-    else:
-        # Jika tidak ada filter waktu, ambil langsung sesuai jumlah atau max 1000
-        return 1000 if max_items_val == "-" else int(max_items_val)
 
 def scrape_instagram(client, keyword, scrape_limit):
     clean_kw = keyword.replace("#", "").replace("@", "").strip()
@@ -146,7 +138,7 @@ def scrape_instagram(client, keyword, scrape_limit):
                 "Platform": "Instagram",
                 "Author": item.get("ownerUsername") or item.get("owner", {}).get("username") or clean_kw,
                 "Followers": item.get("owner", {}).get("followersCount", "N/A"),
-                "Account_Created": "N/A", # Instagram post API jarang mengembalikan tanggal pembuatan akun
+                "Account_Created": "N/A", 
                 "Content": item.get("caption") or "",
                 "Likes": item.get("likesCount", 0) or 0,
                 "Comments": item.get("commentsCount", 0) or 0,
@@ -281,22 +273,19 @@ if btn_analyze:
             client = ApifyClient(APIFY_PERMANENT_TOKEN)
             all_raw_data = []
 
-            status_box = st.status("🔍 Mengambil data dalam jumlah besar untuk database awal...", expanded=True)
+            status_box = st.status(f"🔍 Mengambil {raw_limit} data mentah untuk database awal...", expanded=True)
 
-            # Hitung kebutuhan Scraping Limit untuk database mentah
-            scrape_limit = determine_scrape_limit(max_items_selection, filter_time)
-
-            # 1. Jalankan Filter Platform & Scrape data mentah
+            # 1. Jalankan Scrape data mentah sebanyak input `raw_limit`
             for p in platforms:
-                status_box.write(f"⏳ Mengambil maksimal {scrape_limit} data mentah dari **{p}**...")
+                status_box.write(f"⏳ Mengekstrak maksimal {raw_limit} data dari **{p}** (Proses ini mungkin memakan waktu)...")
                 if p == "Instagram":
-                    res = scrape_instagram(client, keyword, scrape_limit)
+                    res = scrape_instagram(client, keyword, raw_limit)
                 elif p == "TikTok":
-                    res = scrape_tiktok(client, keyword, scrape_limit)
+                    res = scrape_tiktok(client, keyword, raw_limit)
                 elif p == "X(Twitter)":
-                    res = scrape_twitter(client, keyword, scrape_limit)
+                    res = scrape_twitter(client, keyword, raw_limit)
                 elif p == "Facebook":
-                    res = scrape_facebook(client, keyword, scrape_limit)
+                    res = scrape_facebook(client, keyword, raw_limit)
                 else:
                     res = []
                 
@@ -308,13 +297,13 @@ if btn_analyze:
             else:
                 df_raw = pd.DataFrame(all_raw_data)
                 
-                # 2. Jalankan Filter Berdasarkan Rentang Waktu
-                status_box.write("⏳ Menerapkan filter rentang waktu pada database...")
+                # 2. Jalankan Filter Berdasarkan Rentang Waktu (Database Mentah -> Disaring)
+                status_box.write(f"⏳ Total {len(df_raw)} data berhasil ditarik. Menerapkan filter rentang waktu: {filter_time}...")
                 df_time_filtered = filter_by_time_range(df_raw, filter_time, start_date, end_date)
                 
                 if df_time_filtered.empty:
                     status_box.update(label="⚠️ Tidak ada data dalam rentang waktu.", state="error", expanded=False)
-                    st.warning("⚠️ Ditemukan data, tetapi tidak ada yang masuk dalam rentang waktu yang dipilih.")
+                    st.warning("⚠️ Ditemukan data dari API, tetapi tidak ada yang masuk dalam rentang waktu yang dipilih.")
                 else:
                     # 3. Hitung Skor Engagement (Likes + Comments + Shares/Views)
                     status_box.write("⏳ Menghitung & mengurutkan skor engagement tertinggi...")
@@ -331,15 +320,16 @@ if btn_analyze:
                     # 4. Urutkan berdasarkan Engagement Tertinggi
                     df_sorted = df_time_filtered.sort_values(by='Engagement_Score', ascending=False)
                     
-                    # 5. Filter Jumlah Postingan Terakhir (Top N)
+                    # 5. Filter Jumlah Postingan Terakhir (Top N) untuk Ditampilkan
                     if max_items_selection == "-":
                         df_final = df_sorted.reset_index(drop=True)
                     else:
                         df_final = df_sorted.head(int(max_items_selection)).reset_index(drop=True)
                     
+                    # Simpan data mentah tersaring ke dalam memory Streamlit
                     st.session_state["scraped_data"] = df_final
                     status_box.update(label="✅ Analisa & penyaringan selesai!", state="complete", expanded=False)
-                    st.success(f"🎉 Berhasil menyaring dan mendapatkan {len(df_final)} postingan dengan engagement tertinggi!")
+                    st.success(f"🎉 Berhasil memproses data! Dari raw data yang ditarik, {len(df_final)} postingan dengan engagement tertinggi siap ditampilkan.")
 
 
 # ==========================================
@@ -356,7 +346,7 @@ if "scraped_data" in st.session_state:
         st.subheader("Ringkasan Performa Per Platform (Engagement Tertinggi)")
         
         col_m1, col_m2, col_m3, col_m4 = st.columns(4)
-        col_m1.metric("Total Postingan", len(df))
+        col_m1.metric("Data Ditampilkan", len(df))
         col_m2.metric("Total Likes", f"{df['Likes'].sum():,}")
         col_m3.metric("Total Komentar", f"{df['Comments'].sum():,}")
         col_m4.metric("Total Views/Shares", f"{df['Shares/Views'].sum():,}")
