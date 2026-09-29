@@ -124,16 +124,12 @@ def filter_by_time_range(df, filter_time, start_date=None, end_date=None):
 # ==========================================
 
 def scrape_instagram(client, keyword, scrape_limit):
-    """
-    Penarikan data Instagram menggunakan Apify Actor (Bebas Blokir IP & Tanpa Sesi Login).
-    """
     results = []
     clean_kw = keyword.replace("#", "").replace("@", "").strip()
-    safe_limit = min(scrape_limit, 200)
+    safe_limit = min(scrape_limit, 500)
 
     try:
         if keyword.startswith("@"):
-            # Scraping berdasarkan Akun Profil
             run_input = {
                 "directUrls": [f"https://www.instagram.com/{clean_kw}/"],
                 "resultsType": "posts",
@@ -141,10 +137,11 @@ def scrape_instagram(client, keyword, scrape_limit):
             }
             actor_name = "apify/instagram-scraper"
         else:
-            # Scraping berdasarkan Hashtag/Topik
+            # Gunakan instagram-scraper untuk pencarian hashtag dengan hasil Top Posts & pagination lebih baik
             run_input = {
                 "hashtags": [clean_kw],
-                "resultsLimit": safe_limit
+                "resultsLimit": safe_limit,
+                "resultsType": "top"  # Mengambil postingan viral/engagement tinggi
             }
             actor_name = "apify/instagram-hashtag-scraper"
 
