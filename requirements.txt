@@ -1,3 +1,4 @@
+apify-client
 streamlit
 gspread
 google-api-python-client
