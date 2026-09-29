@@ -125,7 +125,7 @@ def filter_by_time_range(df, filter_time, start_date=None, end_date=None):
 
 def scrape_instagram(client, keyword, scrape_limit):
     """
-    Menggunakan actor utama instagram-scraper agar support limit besar (ratusan/ribuan data).
+    Menggunakan actor utama apify/instagram-scraper agar support limit besar (ratusan/ribuan data).
     """
     results = []
     clean_kw = keyword.replace("#", "").replace("@", "").strip()
@@ -139,14 +139,14 @@ def scrape_instagram(client, keyword, scrape_limit):
                 "resultsLimit": scrape_limit
             }
         elif keyword.startswith("#"):
-            # Target Hashtag menggunakan Instagram Scraper Utama (Bukan hashtag-scraper)
+            # Target Hashtag menggunakan directUrl agar menembus batas limit halaman pertama
             run_input = {
                 "directUrls": [f"https://www.instagram.com/explore/tags/{clean_kw}/"],
                 "resultsType": "posts",
                 "resultsLimit": scrape_limit
             }
         else:
-            # Target Keyword Bebas
+            # Target Keyword / Topik Bebas
             run_input = {
                 "search": clean_kw,
                 "searchType": "hashtag",
@@ -154,7 +154,7 @@ def scrape_instagram(client, keyword, scrape_limit):
                 "resultsLimit": scrape_limit
             }
 
-        # Menggunakan Actor Utama yang jauh lebih stabil untuk data besar
+        # Menggunakan Actor Utama Apify Instagram Scraper
         actor_name = "apify/instagram-scraper"
         run = client.actor(actor_name).call(run_input=run_input)
         dataset_id = get_dataset_id(run)
