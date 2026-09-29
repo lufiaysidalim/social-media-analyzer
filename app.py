@@ -11,7 +11,7 @@ import io
 st.set_page_config(
     page_title="Social Media Analyzer Pro",
     page_icon="📊",
-    layout="wide"
+    layout="centered"
 )
 
 # Header Utama
