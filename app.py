@@ -38,7 +38,7 @@ def update_master_gsheet(
     topic, platforms, post_count, date_range, start_date, end_date, master_id
 ):
     """
-    Mengisi data ke Master Google Sheet milik User (Tanpa terkena quota limit Service Account).
+    Mengisi data ke Master Google Sheet milik User.
     """
     client = init_gspread()
     spreadsheet = client.open_by_key(master_id)
@@ -46,7 +46,7 @@ def update_master_gsheet(
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     clean_topic = topic.replace(" ", "_").replace("#", "").replace("@", "")
 
-    # Buat Data Frame Parameter
+    # Buat Data Frame Parameter (7 baris)
     df_parameter = pd.DataFrame({
         "Parameter": [
             "Topik / Kata Kunci",
@@ -68,7 +68,7 @@ def update_master_gsheet(
         ],
     })
 
-    # Buat Data Frame Data Mentah
+    # Buat Data Frame Data Mentah (Semua kolom konsisten 20 baris)
     df_data_mentah = pd.DataFrame({
         "Post ID": [f"POST_{i:04d}" for i in range(1, 21)],
         "Tanggal Publish": [
@@ -86,18 +86,16 @@ def update_master_gsheet(
         "Jumlah Likes": [150 * i for i in range(1, 21)],
         "Jumlah Comments": [20 * i for i in range(1, 21)],
         "Jumlah Shares": [10 * i for i in range(1, 21)],
-        "Hashtag Utama": [
-            f"#{clean_topic}",
-            "#Trending",
-            "#Viral",
-        ] * 7,
+        "Hashtag Utama": (
+            [f"#{clean_topic}", "#Trending", "#Viral"] * 7
+        )[:20],  # Dipotong tepat 20 baris
     })
 
-    # Tulis data ke tab utama & buat tab histori baru
+    # Tulis data ke tab utama & buat tab histori per analisa
     dict_sheets = {
         "Parameter_Analisis": df_parameter,
         "Data_Mentah_Sosmed": df_data_mentah,
-        f"Data_{clean_topic}_{timestamp[:8]}": df_data_mentah  # Tab histori per topik & tanggal
+        f"Data_{clean_topic}_{timestamp[:8]}": df_data_mentah
     }
 
     for sheet_name, df in dict_sheets.items():
