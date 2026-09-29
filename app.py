@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 from apify_client import ApifyClient
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import io
 
 # ==========================================
@@ -15,13 +15,13 @@ st.set_page_config(
 )
 
 st.title("📊 Social Media Analyzer Pro")
-st.caption("Sistem Analisis Media Sosial Profesional bertenaga Apify API.")
+st.caption("Sistem Analisis Media Sosial Profesional bertenaga Apify API dengan Filter Waktu & Engagement Tinggi.")
 
 # ==========================================
 # 2. FORM INPUT UTAMA
 # ==========================================
 
-keyword = st.text_input("Tema / Hashtag / Nama Akun:", value="metrologi")
+keyword = st.text_input("Topik / Hashtag / Nama Akun:", value="metrologi")
 st.info("💡 **Tips Input:** Gunakan `@` untuk Akun (contoh: @jokowi), `#` untuk Hashtag (contoh: #metrologi), atau ketik langsung untuk Topik (contoh: metrologi).")
 
 col1, col2, col3 = st.columns(3)
@@ -39,6 +39,7 @@ with col3:
         index=2
     )
 
+start_date, end_date = None, None
 if filter_time == "Custom":
     col_date1, col_date2 = st.columns(2)
     with col_date1:
@@ -60,19 +61,77 @@ def get_dataset_id(run):
         return run.get("defaultDatasetId")
     return getattr(run, "defaultDatasetId", getattr(run, "default_dataset_id", None))
 
-def scrape_instagram(client, keyword, max_items):
+def parse_timestamp(ts):
+    """Konversi berbagai format timestamp ke objek datetime (aware/naive UTC)"""
+    if not ts:
+        return datetime.now(timezone.utc)
+    if isinstance(ts, datetime):
+        return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+    try:
+        # Coba parse ISO format string
+        parsed = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    except Exception:
+        try:
+            # Coba format epoch timestamp (angka detik/milidetik)
+            if str(ts).isdigit():
+                val = float(ts)
+                if val > 1e12: # milidetik
+                    val = val / 1000.0
+                return datetime.fromtimestamp(val, tz=timezone.utc)
+        except Exception:
+            pass
+    return datetime.now(timezone.utc)
+
+def filter_by_time_range(df, filter_time, start_date=None, end_date=None):
+    """Filter DataFrame berdasarkan rentang waktu yang dipilih"""
+    if df.empty:
+        return df
+    
+    now = datetime.now(timezone.utc)
+    
+    if filter_time == "1 Hari":
+        limit_date = now - timedelta(days=1)
+    elif filter_time == "1 Minggu":
+        limit_date = now - timedelta(weeks=1)
+    elif filter_time == "1 Bulan":
+        limit_date = now - timedelta(days=30)
+    elif filter_time == "3 Bulan":
+        limit_date = now - timedelta(days=90)
+    elif filter_time == "6 Bulan":
+        limit_date = now - timedelta(days=180)
+    elif filter_time == "1 Tahun":
+        limit_date = now - timedelta(days=365)
+    elif filter_time == "5 Tahun":
+        limit_date = now - timedelta(days=365*5)
+    elif filter_time == "Custom" and start_date and end_date:
+        # Ubah date_input menjadi datetime aware UTC
+        start_dt = datetime.combine(start_date, datetime.min.time()).replace(tzinfo=timezone.utc)
+        end_dt = datetime.combine(end_date, datetime.max.time()).replace(tzinfo=timezone.utc)
+        df['ParsedTime'] = df['Timestamp'].apply(parse_timestamp)
+        return df[(df['ParsedTime'] >= start_dt) & (df['ParsedTime'] <= end_dt)].drop(columns=['ParsedTime'])
+    else:
+        return df
+
+    df['ParsedTime'] = df['Timestamp'].apply(parse_timestamp)
+    filtered = df[df['ParsedTime'] >= limit_date].drop(columns=['ParsedTime'])
+    return filtered
+
+
+def scrape_instagram(client, keyword, fetch_limit):
     clean_kw = keyword.replace("#", "").replace("@", "").strip()
     results = []
-    
     try:
+        # Tarik data sedikit lebih banyak dari target agar setelah difilter waktu masih mencukupi
+        scrape_limit = max(int(fetch_limit) * 3, 50)
         if keyword.startswith("@"):
-            run_input = {"usernames": [clean_kw], "resultsLimit": int(max_items)}
+            run_input = {"usernames": [clean_kw], "resultsLimit": scrape_limit}
             run = client.actor("apify/instagram-scraper").call(run_input=run_input)
         elif keyword.startswith("#"):
-            run_input = {"hashtags": [clean_kw], "resultsLimit": int(max_items)}
+            run_input = {"hashtags": [clean_kw], "resultsLimit": scrape_limit}
             run = client.actor("apify/instagram-hashtag-scraper").call(run_input=run_input)
         else:
-            run_input = {"hashtags": [clean_kw.replace(" ", "")], "resultsLimit": int(max_items)}
+            run_input = {"hashtags": [clean_kw.replace(" ", "")], "resultsLimit": scrape_limit}
             run = client.actor("apify/instagram-hashtag-scraper").call(run_input=run_input)
 
         dataset_id = get_dataset_id(run)
@@ -83,26 +142,27 @@ def scrape_instagram(client, keyword, max_items):
                 "Platform": "Instagram",
                 "Author": item.get("ownerUsername") or item.get("owner", {}).get("username") or clean_kw,
                 "Content": item.get("caption") or "",
-                "Likes": item.get("likesCount", 0),
-                "Comments": item.get("commentsCount", 0),
+                "Likes": item.get("likesCount", 0) or 0,
+                "Comments": item.get("commentsCount", 0) or 0,
                 "Shares/Views": item.get("videoViewCount") or item.get("videoPlayCount") or item.get("playsCount") or 0,
                 "Url": item.get("url") or item.get("postUrl") or f"https://instagram.com/p/{item.get('shortCode', '')}",
-                "Timestamp": item.get("timestamp") or item.get("takenAt") or str(datetime.now())
+                "Timestamp": item.get("timestamp") or item.get("takenAt") or str(datetime.now(timezone.utc))
             })
     except Exception as e:
         st.warning(f"Kendala pada platform Instagram: {str(e)}")
     return results
 
-def scrape_tiktok(client, keyword, max_items):
+def scrape_tiktok(client, keyword, fetch_limit):
     results = []
     clean_kw = keyword.replace("#", "").replace("@", "").strip()
     try:
+        scrape_limit = max(int(fetch_limit) * 3, 50)
         if keyword.startswith("@"):
-            run_input = {"profiles": [clean_kw], "resultsPerPage": int(max_items)}
+            run_input = {"profiles": [clean_kw], "resultsPerPage": scrape_limit}
         elif keyword.startswith("#"):
-            run_input = {"hashtags": [clean_kw], "resultsPerPage": int(max_items)}
+            run_input = {"hashtags": [clean_kw], "resultsPerPage": scrape_limit}
         else:
-            run_input = {"searchQueries": [clean_kw], "resultsPerPage": int(max_items)}
+            run_input = {"searchQueries": [clean_kw], "resultsPerPage": scrape_limit}
 
         run = client.actor("clockworks/free-tiktok-scraper").call(run_input=run_input)
         dataset_id = get_dataset_id(run)
@@ -113,20 +173,21 @@ def scrape_tiktok(client, keyword, max_items):
                 "Platform": "TikTok",
                 "Author": item.get("authorMeta", {}).get("name") or item.get("author", "N/A"),
                 "Content": item.get("text") or item.get("desc") or "",
-                "Likes": item.get("diggCount") or item.get("likesCount", 0),
-                "Comments": item.get("commentCount", 0),
-                "Shares/Views": item.get("playCount") or item.get("shareCount", 0),
+                "Likes": item.get("diggCount") or item.get("likesCount", 0) or 0,
+                "Comments": item.get("commentCount", 0) or 0,
+                "Shares/Views": item.get("playCount") or item.get("shareCount", 0) or 0,
                 "Url": item.get("webVideoUrl") or item.get("videoUrl") or "",
-                "Timestamp": str(datetime.now())
+                "Timestamp": item.get("createTime") or str(datetime.now(timezone.utc))
             })
     except Exception as e:
         st.warning(f"Kendala pada platform TikTok: {str(e)}")
     return results
 
-def scrape_twitter(client, keyword, max_items):
+def scrape_twitter(client, keyword, fetch_limit):
     results = []
     clean_kw = keyword.replace("#", "").replace("@", "").strip()
     try:
+        scrape_limit = max(int(fetch_limit) * 3, 50)
         if keyword.startswith("@"):
             search_query = f"from:{clean_kw}"
         elif keyword.startswith("#"):
@@ -134,7 +195,7 @@ def scrape_twitter(client, keyword, max_items):
         else:
             search_query = clean_kw
 
-        run_input = {"searchTerms": [search_query], "maxItems": int(max_items)}
+        run_input = {"searchTerms": [search_query], "maxItems": scrape_limit}
         run = client.actor("apify/twitter-scraper").call(run_input=run_input)
         dataset_id = get_dataset_id(run)
         dataset_items = client.dataset(dataset_id).list_items().items
@@ -144,20 +205,21 @@ def scrape_twitter(client, keyword, max_items):
                 "Platform": "X(Twitter)",
                 "Author": item.get("author", {}).get("userName") or "N/A",
                 "Content": item.get("full_text") or item.get("text") or "",
-                "Likes": item.get("likeCount", 0),
-                "Comments": item.get("replyCount", 0),
-                "Shares/Views": item.get("retweetCount", 0),
+                "Likes": item.get("likeCount", 0) or 0,
+                "Comments": item.get("replyCount", 0) or 0,
+                "Shares/Views": item.get("retweetCount", 0) or 0,
                 "Url": item.get("url") or "",
-                "Timestamp": item.get("createdAt") or str(datetime.now())
+                "Timestamp": item.get("createdAt") or str(datetime.now(timezone.utc))
             })
     except Exception as e:
         st.warning(f"Kendala pada platform X(Twitter): {str(e)}")
     return results
 
-def scrape_facebook(client, keyword, max_items):
+def scrape_facebook(client, keyword, fetch_limit):
     results = []
     clean_kw = keyword.replace("#", "").replace("@", "").strip()
     try:
+        scrape_limit = max(int(fetch_limit) * 3, 50)
         if keyword.startswith("@"):
             start_url = f"https://www.facebook.com/{clean_kw}"
         elif keyword.startswith("#"):
@@ -167,7 +229,7 @@ def scrape_facebook(client, keyword, max_items):
 
         run_input = {
             "startUrls": [{"url": start_url}],
-            "resultsLimit": int(max_items)
+            "resultsLimit": scrape_limit
         }
         run = client.actor("apify/facebook-posts-scraper").call(run_input=run_input)
         dataset_id = get_dataset_id(run)
@@ -178,11 +240,11 @@ def scrape_facebook(client, keyword, max_items):
                 "Platform": "Facebook",
                 "Author": item.get("user", {}).get("name") or "N/A",
                 "Content": item.get("text") or "",
-                "Likes": item.get("likes", 0),
-                "Comments": item.get("comments", 0),
-                "Shares/Views": item.get("shares", 0),
+                "Likes": item.get("likes", 0) or 0,
+                "Comments": item.get("comments", 0) or 0,
+                "Shares/Views": item.get("shares", 0) or 0,
                 "Url": item.get("url") or "",
-                "Timestamp": item.get("time") or str(datetime.now())
+                "Timestamp": item.get("time") or str(datetime.now(timezone.utc))
             })
     except Exception as e:
         st.warning(f"Kendala pada platform Facebook: {str(e)}")
@@ -201,10 +263,11 @@ if btn_analyze:
     else:
         APIFY_PERMANENT_TOKEN = st.secrets["APIFY_API_TOKEN"]
         client = ApifyClient(APIFY_PERMANENT_TOKEN)
-        all_data = []
+        all_raw_data = []
 
-        status_box = st.status("🔍 Menganalisa data dari media sosial...", expanded=True)
+        status_box = st.status("🔍 Menganalisa & menyaring data media sosial...", expanded=True)
 
+        # 1. Jalankan Filter Platform & Scrape data mentah
         for p in platforms:
             status_box.write(f"⏳ Mengambil data dari **{p}**...")
             if p == "Instagram":
@@ -218,16 +281,41 @@ if btn_analyze:
             else:
                 res = []
             
-            all_data.extend(res)
+            all_raw_data.extend(res)
 
-        status_box.update(label="✅ Analisa selesai!", state="complete", expanded=False)
-
-        if not all_data:
-            st.error("❌ Tidak ada data yang ditemukan berdasarkan filter Anda.")
+        if not all_raw_data:
+            status_box.update(label="❌ Gagal mengambil data.", state="error", expanded=False)
+            st.error("❌ Tidak ada data yang ditemukan dari platform yang dipilih.")
         else:
-            df = pd.DataFrame(all_data)
-            st.session_state["scraped_data"] = df
-            st.success(f"🎉 Berhasil menganalisa {len(df)} data postingan!")
+            df_raw = pd.DataFrame(all_raw_data)
+            
+            # 2. Jalankan Filter Berdasarkan Rentang Waktu
+            status_box.write("⏳ Menerapkan filter rentang waktu...")
+            df_time_filtered = filter_by_time_range(df_raw, filter_time, start_date, end_date)
+            
+            if df_time_filtered.empty:
+                status_box.update(label="⚠️ Tidak ada data dalam rentang waktu.", state="error", expanded=False)
+                st.warning("⚠️ Ditemukan data, tetapi tidak ada yang masuk dalam rentang waktu yang dipilih. Coba perlebar rentang waktu Anda.")
+            else:
+                # 3. Hitung Skor Engagement (Likes + Comments + Shares/Views)
+                df_time_filtered['Likes'] = pd.to_numeric(df_time_filtered['Likes'], errors='coerce').fillna(0)
+                df_time_filtered['Comments'] = pd.to_numeric(df_time_filtered['Comments'], errors='coerce').fillna(0)
+                df_time_filtered['Shares/Views'] = pd.to_numeric(df_time_filtered['Shares/Views'], errors='coerce').fillna(0)
+                
+                df_time_filtered['Engagement_Score'] = (
+                    df_time_filtered['Likes'] + 
+                    df_time_filtered['Comments'] + 
+                    df_time_filtered['Shares/Views']
+                )
+                
+                # 4. Urutkan berdasarkan Engagement Tertinggi dan ambil sejumlah max_items
+                df_sorted = df_time_filtered.sort_values(by='Engagement_Score', ascending=False)
+                df_final = df_sorted.head(int(max_items)).reset_index(drop=True)
+                
+                st.session_state["scraped_data"] = df_final
+                status_box.update(label="✅ Analisa & penyaringan selesai!", state="complete", expanded=False)
+                st.success(f"🎉 Berhasil menyaring dan mendapatkan {len(df_final)} postingan dengan engagement tertinggi!")
+
 
 # ==========================================
 # 5. DISPLAY MULTI-TAB REPORT
@@ -240,7 +328,7 @@ if "scraped_data" in st.session_state:
     tab1, tab2, tab3 = st.tabs(["📊 METRIK & RINGKASAN", "📝 DETAIL POSTINGAN", "📥 UNDUH LAPORAN"])
 
     with tab1:
-        st.subheader("Ringkasan Performa Per Platform")
+        st.subheader("Ringkasan Performa Per Platform (Engagement Tertinggi)")
         
         col_m1, col_m2, col_m3, col_m4 = st.columns(4)
         col_m1.metric("Total Postingan", len(df))
@@ -266,9 +354,9 @@ if "scraped_data" in st.session_state:
             st.plotly_chart(fig_comments, use_container_width=True)
 
     with tab2:
-        st.subheader("Detail Posting Media Sosial")
+        st.subheader("Detail Posting Media Sosial (Urutan Engagement Tertinggi)")
         st.dataframe(
-            df[["Platform", "Author", "Content", "Likes", "Comments", "Shares/Views", "Url"]],
+            df[["Platform", "Author", "Content", "Likes", "Comments", "Shares/Views", "Engagement_Score", "Timestamp", "Url"]],
             use_container_width=True
         )
 
@@ -292,7 +380,7 @@ if "scraped_data" in st.session_state:
         st.download_button(
             label="📊 Unduh Data sebagai Excel (.xlsx)",
             data=excel_data,
-            file_name=f"analisa_sosmed_{keyword.replace('@','').replace('#','')}.xlsx",
+            file_name=f"analisa_sosmed_{keyword.replace('@','').replace('#','')}.csv".replace(".csv", ".xlsx"),
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True
         )
