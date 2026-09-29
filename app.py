@@ -1,12 +1,9 @@
-import datetime
-import io
-import re
-import pandas as pd
 import streamlit as st
-import gspread
-from google.oauth2.service_account import Credentials
-from googleapiclient.discovery import build
+import pandas as pd
+import plotly.express as px
 from apify_client import ApifyClient
+from datetime import datetime
+import io
 
 # ==========================================
 # 1. KONFIGURASI HALAMAN STREAMLIT
@@ -14,579 +11,320 @@ from apify_client import ApifyClient
 st.set_page_config(
     page_title="Social Media Analyzer Pro",
     page_icon="📊",
-    layout="centered"
+    layout="wide"
 )
 
-# Inisialisasi Session State agar hasil analisis tidak hilang saat rerun
-if "analytic_results" not in st.session_state:
-    st.session_state.analytic_results = None
-
-# ==========================================
-# 2. BACA STREAMLIT SECRETS (AMAN)
-# ==========================================
-MASTER_TOKEN = st.secrets.get("ACCESS_TOKEN", "ANALYZER2026")
-FOLDER_ID = st.secrets.get("FOLDER_ID", "")
-APIFY_TOKEN = st.secrets.get("APIFY_API_TOKEN", "")
-
-SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive",
-]
-
-# ==========================================
-# 3. KONEKSI GOOGLE DRIVE & SHEETS API
-# ==========================================
-def get_gcp_credentials():
-    if "gcp_service_account" not in st.secrets:
-        st.error("⚠️ Secrets 'gcp_service_account' belum dikonfigurasi di Streamlit!")
-        st.stop()
-    return Credentials.from_service_account_info(
-        st.secrets["gcp_service_account"], scopes=SCOPES
-    )
-
-def create_new_gsheet_file(title, folder_id, dict_sheets):
-    """
-    Membuat file Google Sheet BARU di Google Drive folder_id
-    dengan 10 tab sheet terpisah dan mengatur izin akses publik.
-    """
-    creds = get_gcp_credentials()
-    gclient = gspread.authorize(creds)
-    drive_service = build('drive', 'v3', credentials=creds)
-
-    # 1. Buat File Google Spreadsheet Baru
-    file_metadata = {
-        'name': title,
-        'mimeType': 'application/vnd.google-apps.spreadsheet',
-        'parents': [folder_id] if folder_id else []
-    }
-    file_res = drive_service.files().create(
-        body=file_metadata, fields='id, webViewLink'
-    ).execute()
-    
-    sheet_id = file_res.get('id')
-
-    # 2. Buka Akses Izin File (Agar User Bisa Membuka Link Tanpa Access Denied)
-    try:
-        drive_service.permissions().create(
-            fileId=sheet_id,
-            body={'type': 'anyone', 'role': 'reader'},
-            fields='id'
-        ).execute()
-    except Exception as e:
-        st.warning(f"⚠️ Gagal mengatur izin akses publik Google Sheet: {e}")
-
-    spreadsheet = gclient.open_by_key(sheet_id)
-    default_sheet = spreadsheet.sheet1
-
-    # 3. Tulis Setiap Tab Worksheet dari Dictionary DataFrame
-    for sheet_name, df in dict_sheets.items():
-        df_clean = df.copy()
-        df_clean = df_clean.astype(str)
-        content = [df_clean.columns.values.tolist()] + df_clean.values.tolist()
-        
-        rows = max(len(content) + 10, 50)
-        cols = max(len(df_clean.columns) + 5, 10)
-        
-        ws = spreadsheet.add_worksheet(title=sheet_name, rows=rows, cols=cols)
-        # Gunakan sintaks spesifik 'A1' agar kompatibel dengan seluruh versi gspread
-        ws.update('A1', content)
-
-    # 4. Hapus Sheet bawaan "Sheet1"
-    try:
-        spreadsheet.del_worksheet(default_sheet)
-    except Exception:
-        pass
-
-    return spreadsheet.url
-
-# ==========================================
-# 4. MODULE SCRAPER APIFY (AMAN & ROBUST)
-# ==========================================
-def get_apify_client():
-    if not APIFY_TOKEN:
-        st.error("⚠️ APIFY_API_TOKEN belum dikonfigurasi di Streamlit Secrets!")
-        st.stop()
-    return ApifyClient(APIFY_TOKEN)
-
-def parse_tiktok_timestamp(ts):
-    if not ts:
-        return datetime.datetime.now()
-    try:
-        ts_num = float(ts)
-        if ts_num > 1e11:  # Jika timestamp dalam milidetik
-            ts_num /= 1000.0
-        return datetime.datetime.fromtimestamp(ts_num)
-    except Exception:
-        return datetime.datetime.now()
-
-def scrape_instagram(client, keyword, max_items):
-    clean_kw = keyword.replace("#", "").replace("@", "").strip()
-    
-    # Pisahkan logika username dan hashtag
-    if keyword.startswith("@"):
-        run_input = {"username": [clean_kw], "resultsLimit": int(max_items)}
-    else:
-        run_input = {"hashtags": [clean_kw], "resultsLimit": int(max_items)}
-
-    run = client.actor("apify/instagram-post-scraper").call(run_input=run_input)
-    dataset = client.dataset(run["defaultDatasetId"])
-
-    parsed = []
-    for item in dataset.iterate_items():
-        ts_str = str(item.get("timestamp", ""))
-        parsed.append({
-            "Post ID": str(item.get("id", "")),
-            "Tanggal Publish": ts_str[:10] if len(ts_str) >= 10 else str(datetime.date.today()),
-            "Waktu Publish Full": ts_str or str(datetime.datetime.now()),
-            "Platform": "Instagram",
-            "Author / Username": f"@{item.get('ownerUsername', 'unknown')}",
-            "Konten / Teks": item.get("caption", "") or "",
-            "Jumlah Likes": int(item.get("likesCount", 0) or 0),
-            "Jumlah Comments": int(item.get("commentsCount", 0) or 0),
-            "Jumlah Shares": 0,
-            "Format Konten": "Foto / Reel" if "video" in str(item.get("type", "")).lower() else "Foto / Image",
-            "Hashtag Utama": keyword,
-        })
-    return pd.DataFrame(parsed)
-
-def scrape_tiktok(client, keyword, max_items):
-    clean_kw = keyword.replace("#", "").replace("@", "").strip()
-    run_input = {
-        "searchInputs": [clean_kw],
-        "resultsPerPage": int(max_items),
-    }
-    run = client.actor("clockworks/tiktok-scraper").call(run_input=run_input)
-    dataset = client.dataset(run["defaultDatasetId"])
-    
-    parsed = []
-    for item in dataset.iterate_items():
-        author = item.get("authorMeta", {}) or {}
-        dt_obj = parse_tiktok_timestamp(item.get("createTime"))
-        
-        parsed.append({
-            "Post ID": str(item.get("id", "")),
-            "Tanggal Publish": dt_obj.strftime("%Y-%m-%d"),
-            "Waktu Publish Full": dt_obj.strftime("%Y-%m-%d %H:%M:%S"),
-            "Platform": "TikTok",
-            "Author / Username": f"@{author.get('name', 'unknown')}",
-            "Konten / Teks": item.get("text", "") or "",
-            "Jumlah Likes": int(item.get("diggCount", 0) or 0),
-            "Jumlah Comments": int(item.get("commentCount", 0) or 0),
-            "Jumlah Shares": int(item.get("shareCount", 0) or 0),
-            "Format Konten": "Video / Short",
-            "Hashtag Utama": keyword
-        })
-    return pd.DataFrame(parsed)
-
-def scrape_twitter(client, keyword, max_items):
-    run_input = {
-        "searchTerms": [keyword],
-        "maxItems": int(max_items),
-    }
-    run = client.actor("apidojo/tweet-scraper").call(run_input=run_input)
-    dataset = client.dataset(run["defaultDatasetId"])
-    
-    parsed = []
-    for item in dataset.iterate_items():
-        author = item.get("author", {}) or {}
-        ts_str = str(item.get("createdAt", ""))
-        parsed.append({
-            "Post ID": str(item.get("id", "")),
-            "Tanggal Publish": ts_str[:10] if len(ts_str) >= 10 else str(datetime.date.today()),
-            "Waktu Publish Full": ts_str or str(datetime.datetime.now()),
-            "Platform": "X (Twitter)",
-            "Author / Username": f"@{author.get('userName', 'unknown')}",
-            "Konten / Teks": item.get("text", "") or "",
-            "Jumlah Likes": int(item.get("likeCount", 0) or 0),
-            "Jumlah Comments": int(item.get("replyCount", 0) or 0),
-            "Jumlah Shares": int(item.get("retweetCount", 0) or 0),
-            "Format Konten": "Teks / Tweet",
-            "Hashtag Utama": keyword
-        })
-    return pd.DataFrame(parsed)
-
-def scrape_facebook(client, keyword, max_items):
-    run_input = {
-        "searchTerms": [keyword],
-        "maxResults": int(max_items),
-    }
-    run = client.actor("apify/facebook-posts-scraper").call(run_input=run_input)
-    dataset = client.dataset(run["defaultDatasetId"])
-    
-    parsed = []
-    for item in dataset.iterate_items():
-        user = item.get("user", {}) or {}
-        ts_str = str(item.get("time", item.get("timestamp", "")))
-        parsed.append({
-            "Post ID": str(item.get("postId", item.get("id", ""))),
-            "Tanggal Publish": ts_str[:10] if len(ts_str) >= 10 else str(datetime.date.today()),
-            "Waktu Publish Full": ts_str or str(datetime.datetime.now()),
-            "Platform": "Facebook",
-            "Author / Username": user.get("name", "unknown"),
-            "Konten / Teks": item.get("text", "") or "",
-            "Jumlah Likes": int(item.get("likes", item.get("likesCount", 0)) or 0),
-            "Jumlah Comments": int(item.get("comments", item.get("commentsCount", 0)) or 0),
-            "Jumlah Shares": int(item.get("shares", item.get("sharesCount", 0)) or 0),
-            "Format Konten": "Status / Post",
-            "Hashtag Utama": keyword
-        })
-    return pd.DataFrame(parsed)
-
-# ==========================================
-# 5. PEMROSESAN ANALISIS & GENERATOR 10 TAB
-# ==========================================
-def generate_professional_analytics(df_raw, topic, platforms, target_post, date_range, start_date, end_date):
-    if df_raw.empty:
-        return {}
-
-    # Pastikan tipe data numerik
-    for col in ["Jumlah Likes", "Jumlah Comments", "Jumlah Shares"]:
-        if col not in df_raw.columns:
-            df_raw[col] = 0
-        df_raw[col] = pd.to_numeric(df_raw[col], errors="coerce").fillna(0).astype(int)
-        
-    df_raw["Total Interaksi"] = df_raw["Jumlah Likes"] + df_raw["Jumlah Comments"] + df_raw["Jumlah Shares"]
-    
-    # Ekstraksi jam publish (00 - 23)
-    def parse_hour(val):
-        try:
-            return pd.to_datetime(val).hour
-        except Exception:
-            return 12
-            
-    df_raw["Jam Publish"] = df_raw["Waktu Publish Full"].apply(parse_hour)
-
-    total_posts = len(df_raw)
-    total_likes = df_raw["Jumlah Likes"].sum()
-    total_comments = df_raw["Jumlah Comments"].sum()
-    total_shares = df_raw["Jumlah Shares"].sum()
-    total_engagement = df_raw["Total Interaksi"].sum()
-    avg_er_per_post = round(total_engagement / max(total_posts, 1), 2)
-
-    # --- TAB 1: 01_Ringkasan ---
-    df_01 = pd.DataFrame({
-        "Parameter Analisis": [
-            "Topik / Kata Kunci", "Platform Ditarik", "Target Post Limit",
-            "Total Data Riil Ditarik", "Rentang Waktu Filter", "Tanggal Mulai",
-            "Tanggal Selesai", "Total Interaksi (Engagement)", "Total Likes",
-            "Total Comments", "Total Shares / Retweets", "Rata-rata Interaksi / Post", "Waktu Eksekusi"
-        ],
-        "Nilai": [
-            topic, ", ".join(platforms), target_post,
-            total_posts, date_range, str(start_date),
-            str(end_date), f"{total_engagement:,}", f"{total_likes:,}",
-            f"{total_comments:,}", f"{total_shares:,}", avg_er_per_post, str(datetime.datetime.now())
-        ]
-    })
-
-    # --- TAB 2: 02_Tren_Harian ---
-    df_02 = df_raw.groupby("Tanggal Publish").agg(
-        Jumlah_Post=("Post ID", "count"),
-        Total_Likes=("Jumlah Likes", "sum"),
-        Total_Comments=("Jumlah Comments", "sum"),
-        Total_Shares=("Jumlah Shares", "sum"),
-        Total_Interaksi=("Total Interaksi", "sum")
-    ).reset_index()
-    df_02["Avg_Interaksi_Per_Post"] = (df_02["Total_Interaksi"] / df_02["Jumlah_Post"].replace(0, 1)).round(2)
-
-    # --- TAB 3: 03_Matriks_24Jam ---
-    hours_df = pd.DataFrame({"Jam Publish": list(range(24))})
-    df_03_group = df_raw.groupby("Jam Publish").agg(
-        Jumlah_Post=("Post ID", "count"),
-        Total_Interaksi=("Total Interaksi", "sum")
-    ).reset_index()
-    df_03 = pd.merge(hours_df, df_03_group, on="Jam Publish", how="left").fillna(0)
-    df_03["Jam (00-23)"] = df_03["Jam Publish"].apply(lambda x: f"{int(x):02d}:00 - {int(x):02d}:59")
-    threshold_peak = df_03["Total_Interaksi"].quantile(0.75)
-    df_03["Status Waktu"] = df_03["Total_Interaksi"].apply(lambda x: "🔥 Prime / Peak Time" if x >= threshold_peak and x > 0 else "Normal / Off-Peak")
-    df_03 = df_03[["Jam (00-23)", "Jumlah_Post", "Total_Interaksi", "Status Waktu"]]
-
-    # --- TAB 4: 04_Top_Engagement ---
-    df_04 = df_raw.sort_values(by="Total Interaksi", ascending=False).head(50).copy()
-    df_04 = df_04[["Post ID", "Platform", "Author / Username", "Tanggal Publish", "Konten / Teks", "Jumlah Likes", "Jumlah Comments", "Jumlah Shares", "Total Interaksi"]]
-
-    # --- TAB 5: 05_Velocity_Viral ---
-    df_raw["Skor_Viralitas"] = (df_raw["Jumlah Shares"] * 3) + (df_raw["Jumlah Comments"] * 2) + df_raw["Jumlah Likes"]
-    df_05 = df_raw.sort_values(by="Skor_Viralitas", ascending=False).head(50).copy()
-    mean_viral = df_raw["Skor_Viralitas"].mean() if not df_raw.empty else 0
-    df_05["Status Viral"] = df_05["Skor_Viralitas"].apply(lambda x: "🚀 High Viral Potential" if x > mean_viral * 2 and x > 0 else "Moderate Velocity")
-    df_05 = df_05[["Post ID", "Platform", "Author / Username", "Total Interaksi", "Skor_Viralitas", "Status Viral", "Konten / Teks"]]
-
-    # --- TAB 6: 06_Hashtag_Topik ---
-    hashtag_dict = {}
-    for text in df_raw["Konten / Teks"]:
-        tags = re.findall(r'#\w+', str(text))
-        for tag in tags:
-            tag_lower = tag.lower()
-            hashtag_dict[tag_lower] = hashtag_dict.get(tag_lower, 0) + 1
-    
-    if hashtag_dict:
-        df_06 = pd.DataFrame(list(hashtag_dict.items()), columns=["Hashtag / Kata Kunci", "Frekuensi Muncul"]).sort_values(by="Frekuensi Muncul", ascending=False).head(30)
-    else:
-        df_06 = pd.DataFrame({"Hashtag / Kata Kunci": [topic], "Frekuensi Muncul": [total_posts]})
-
-    # --- TAB 7: 07_Demografi_Lokasi ---
-    peak_hour_str = df_03.sort_values(by='Total_Interaksi', ascending=False).iloc[0]['Jam (00-23)'] if not df_03.empty else "N/A"
-    top_platform = df_raw["Platform"].value_counts().index[0] if not df_raw.empty else "N/A"
-    
-    df_07 = pd.DataFrame({
-        "Kategori Insight": ["Aktivitas Terbesar", "Platform Dominan", "Estimasi Usia Audiens", "Bahasa Utama", "Distribusi Gender (Est)"],
-        "Kelompok / Value": [
-            f"Jam {peak_hour_str}",
-            top_platform,
-            "18 - 34 Tahun (Mayoritas Pengguna Sosmed)",
-            "Bahasa Indonesia (Dominan)",
-            "52% Pria / 48% Wanita (Seimbang)"
-        ],
-        "Keterangan Analytical": [
-            "Waktu puncak interaksi publik terhadap topik ini",
-            "Platform dengan kontribusi volume konten terbanyak",
-            "Berdasarkan demografi pengguna aktif platform pilihan",
-            "Analisis kontekstual teks postingan",
-            "Estimasi umum engagement audiens publik"
-        ]
-    })
-
-    # --- TAB 8: 08_Bot_vs_Organik ---
-    def classify_bot(row):
-        text = str(row.get("Konten / Teks", ""))
-        if len(text) < 5 or row.get("Jumlah Likes", 0) == 0:
-            return "Potensi Bot / Spam"
-        elif row.get("Total Interaksi", 0) > 5000:
-            return "Akun Influencer / Viral"
-        else:
-            return "Akun Organik Publik"
-
-    df_raw["Kategori_Akun"] = df_raw.apply(classify_bot, axis=1)
-    df_08 = df_raw.groupby("Kategori_Akun").agg(
-        Jumlah_Post=("Post ID", "count"),
-        Total_Interaksi=("Total Interaksi", "sum")
-    ).reset_index()
-    df_08["Persentase (%)"] = (df_08["Jumlah_Post"] / max(total_posts, 1) * 100).round(2)
-
-    # --- TAB 9: 09_Format_Konten ---
-    df_09 = df_raw.groupby("Format Konten").agg(
-        Jumlah_Post=("Post ID", "count"),
-        Total_Likes=("Jumlah Likes", "sum"),
-        Total_Comments=("Jumlah Comments", "sum"),
-        Total_Shares=("Jumlah Shares", "sum"),
-        Total_Interaksi=("Total Interaksi", "sum")
-    ).reset_index()
-    df_09["Rata2_Interaksi_Per_Post"] = (df_09["Total_Interaksi"] / df_09["Jumlah_Post"].replace(0, 1)).round(2)
-
-    # --- TAB 10: 10_Data_Mentah ---
-    df_10 = df_raw.copy()
-
-    return {
-        "01_Ringkasan": df_01,
-        "02_Tren_Harian": df_02,
-        "03_Matriks_24Jam": df_03,
-        "04_Top_Engagement": df_04,
-        "05_Velocity_Viral": df_05,
-        "06_Hashtag_Topik": df_06,
-        "07_Demografi_Lokasi": df_07,
-        "08_Bot_vs_Organik": df_08,
-        "09_Format_Konten": df_09,
-        "10_Data_Mentah": df_10
-    }
-
-def convert_dict_to_excel(dict_sheets):
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        for sheet_name, df in dict_sheets.items():
-            df.to_excel(writer, sheet_name=sheet_name, index=False)
-    return output.getvalue()
-
-# ==========================================
-# 6. FRONTEND STREAMLIT UI & INTERAKSI USER
-# ==========================================
-st.title("📊 Social Media Analyzer (Real-Data & Multi-Tab Report)")
+# Header Utama
+st.title("📊 Social Media Analyzer Pro (& Multi-Tab Report)")
 st.caption("Sistem Analisis Media Sosial Profesional bertenaga Apify API & Google Drive Integration.")
 
-st.markdown("---")
+# ==========================================
+# 2. SIDEBAR & INTEGRASI API
+# ==========================================
+st.sidebar.header("⚙️ Pengaturan & API Key")
 
-# Parameter Input Form
-kata_kunci = st.text_input(
-    "Topik / Hashtag / Nama Akun:",
-    placeholder="Contoh: #metrologi atau @pemerintah",
-)
+# Mengambil token dari Streamlit Secrets atau Input Manual
+default_apify_token = st.secrets.get("APIFY_TOKEN", "") if hasattr(st, "secrets") else ""
+apify_token = st.sidebar.text_input("Apify API Token:", value=default_apify_token, type="password")
 
-col1, col2, col3 = st.columns(3)
+st.sidebar.markdown("---")
+st.sidebar.info("💡 **Tips Pencarian Instagram:**\n- Gunakan `@nama_akun` untuk mengambil pos dari akun tertentu.\n- Gunakan `kata_kunci` atau `#hashtag` untuk mencari postingan berdasarkan topik.")
+
+# ==========================================
+# 3. FORM INPUT UTAMA
+# ==========================================
+col1, col2, col3 = st.columns([2, 1.5, 1.5])
 
 with col1:
-    medsos = st.multiselect(
-        "Platform:", 
-        ["Instagram", "TikTok", "X (Twitter)", "Facebook"],
-        default=["Instagram", "TikTok"]
-    )
+    keyword = st.text_input("Topik / Hashtag / Nama Akun:", value="metrologi")
 
 with col2:
-    jumlah_post = st.selectbox("Jumlah Post Per Platform:", [10, 20, 50, 100, 200])
+    platforms = st.multiselect("Platform:", ["Instagram", "YouTube", "TikTok", "Twitter/X"], default=["Instagram"])
 
 with col3:
-    rentang_waktu = st.selectbox(
-        "Rentang Waktu Filter:",
-        ["1 Hari", "1 Minggu", "1 Bulan", "6 Bulan", "1 Tahun", "5 Tahun", "Custom"],
-        index=2
-    )
+    max_items = st.selectbox("Jumlah Post Per Platform:", [5, 10, 20, 50, 100], index=1)
 
-# Perhitungan Tanggal
-tgl_selesai = datetime.date.today()
-if rentang_waktu == "1 Hari":
-    tgl_mulai = tgl_selesai - datetime.timedelta(days=1)
-elif rentang_waktu == "1 Minggu":
-    tgl_mulai = tgl_selesai - datetime.timedelta(days=7)
-elif rentang_waktu == "1 Bulan":
-    tgl_mulai = tgl_selesai - datetime.timedelta(days=30)
-elif rentang_waktu == "6 Bulan":
-    tgl_mulai = tgl_selesai - datetime.timedelta(days=180)
-elif rentang_waktu == "1 Tahun":
-    tgl_mulai = tgl_selesai - datetime.timedelta(days=365)
-elif rentang_waktu == "5 Tahun":
-    tgl_mulai = tgl_selesai - datetime.timedelta(days=365*5)
-else:
-    tgl_mulai = tgl_selesai - datetime.timedelta(days=30)
+col_f1, col_f2 = st.columns(2)
+with col_f1:
+    filter_time = st.selectbox("Rentang Waktu Filter:", ["1 Minggu", "1 Bulan", "3 Bulan", "6 Bulan", "1 Tahun"], index=1)
 
-if rentang_waktu == "Custom":
-    c_tgl1, c_tgl2 = st.columns(2)
-    with c_tgl1:
-        tgl_mulai = st.date_input("Dari Tanggal:", value=tgl_mulai)
-    with c_tgl2:
-        tgl_selesai = st.date_input("Hingga Tanggal:", value=tgl_selesai)
+with col_f2:
+    security_token = st.text_input("Token Akses Keamanan (Khusus Pengguna Berizin):", type="password")
 
-token_user = st.text_input(
-    "Token Akses Keamanan (Khusus Pengguna Berizin):",
-    type="password",
-    help="Masukkan token keamanan untuk menjalankan analisis."
-)
+# ==========================================
+# 4. FUNGSI SCRAPER PER PLATFORM
+# ==========================================
 
-st.markdown("---")
+def scrape_instagram(client, keyword, max_items):
+    """
+    Fungsi Scraper Instagram dengan perbaikan Actor Apify:
+    - Akun (@username) -> apify/instagram-post-scraper
+    - Hashtag/Topik -> apify/instagram-hashtag-scraper
+    """
+    clean_kw = keyword.replace("#", "").replace("@", "").strip()
+    results = []
 
-# Tombol Eksekusi
-if st.button("🚀 ANALISA DATA RIIL & BUAT LAPORAN"):
-    # VALIDASI KEAMANAN & INPUT
-    if token_user != MASTER_TOKEN:
-        st.error(f"❌ Token Akses salah atau kosong! Pembacaan dan eksekusi ditolak.")
-    elif not kata_kunci:
-        st.warning("⚠️ Silakan masukkan Topik / Hashtag / Nama Akun terlebih dahulu.")
-    elif not medsos:
-        st.warning("⚠️ Pilih minimal satu platform sosial media.")
+    # OPSI A: Jika pencarian berawalan '@' (Target Profil Akun)
+    if keyword.startswith("@"):
+        try:
+            run_input = {
+                "username": [clean_kw],
+                "resultsLimit": int(max_items)
+            }
+            run = client.actor("apify/instagram-post-scraper").call(run_input=run_input)
+            dataset_items = client.dataset(run["defaultDatasetId"]).list_items().items
+            
+            for item in dataset_items:
+                results.append({
+                    "Platform": "Instagram",
+                    "Author": item.get("ownerUsername") or clean_kw,
+                    "Content": item.get("caption") or "",
+                    "Likes": item.get("likesCount", 0),
+                    "Comments": item.get("commentsCount", 0),
+                    "Shares/Views": item.get("videoViewCount") or item.get("videoPlayCount") or 0,
+                    "Url": item.get("url") or f"https://instagram.com/p/{item.get('shortCode', '')}",
+                    "Timestamp": item.get("timestamp") or str(datetime.now())
+                })
+            return results
+        except Exception as e:
+            st.warning(f"Metode Profile Scraper gagal: {str(e)}. Mengalihkan ke Hashtag Scraper...")
+
+    # OPSI B: Jika pencarian berupa Hashtag / Topik (Default)
+    try:
+        run_input = {
+            "hashtags": [clean_kw],
+            "resultsLimit": int(max_items),
+            "resultsType": "posts"
+        }
+        # Gunakan actor khusus hashtag
+        run = client.actor("apify/instagram-hashtag-scraper").call(run_input=run_input)
+        dataset_items = client.dataset(run["defaultDatasetId"]).list_items().items
+        
+        for item in dataset_items:
+            results.append({
+                "Platform": "Instagram",
+                "Author": item.get("ownerUsername") or item.get("owner", {}).get("username") or "N/A",
+                "Content": item.get("caption") or "",
+                "Likes": item.get("likesCount", 0),
+                "Comments": item.get("commentsCount", 0),
+                "Shares/Views": item.get("videoPlayCount") or item.get("playsCount") or 0,
+                "Url": item.get("url") or item.get("postUrl") or "",
+                "Timestamp": item.get("timestamp") or item.get("takenAt") or str(datetime.now())
+            })
+            
+    except Exception as e1:
+        # Fallback jika Hashtag Scraper gagal/kosong, coba via Profile Scraper
+        try:
+            run_input = {
+                "username": [clean_kw],
+                "resultsLimit": int(max_items)
+            }
+            run = client.actor("apify/instagram-post-scraper").call(run_input=run_input)
+            dataset_items = client.dataset(run["defaultDatasetId"]).list_items().items
+            
+            for item in dataset_items:
+                results.append({
+                    "Platform": "Instagram",
+                    "Author": item.get("ownerUsername") or clean_kw,
+                    "Content": item.get("caption") or "",
+                    "Likes": item.get("likesCount", 0),
+                    "Comments": item.get("commentsCount", 0),
+                    "Shares/Views": item.get("videoViewCount") or 0,
+                    "Url": item.get("url") or "",
+                    "Timestamp": item.get("timestamp") or str(datetime.now())
+                })
+        except Exception as e2:
+            st.warning(f"Kendala pada platform Instagram: {str(e1)}")
+
+    return results
+
+
+def scrape_youtube(client, keyword, max_items):
+    results = []
+    try:
+        run_input = {
+            "searchKeywords": keyword,
+            "maxResults": int(max_items)
+        }
+        run = client.actor("apify/youtube-scraper").call(run_input=run_input)
+        dataset_items = client.dataset(run["defaultDatasetId"]).list_items().items
+        
+        for item in dataset_items:
+            results.append({
+                "Platform": "YouTube",
+                "Author": item.get("channelName") or item.get("channelUrl") or "N/A",
+                "Content": f"{item.get('title', '')}\n{item.get('text', '') or item.get('description', '')}",
+                "Likes": item.get("likes", 0),
+                "Comments": item.get("commentsCount", 0),
+                "Shares/Views": item.get("viewCount", 0),
+                "Url": item.get("url") or item.get("videoUrl") or "",
+                "Timestamp": item.get("date") or str(datetime.now())
+            })
+    except Exception as e:
+        st.warning(f"Kendala pada platform YouTube: {str(e)}")
+    return results
+
+
+def scrape_tiktok(client, keyword, max_items):
+    results = []
+    clean_kw = keyword.replace("#", "").replace("@", "").strip()
+    try:
+        run_input = {
+            "hashtags": [clean_kw],
+            "resultsPerPage": int(max_items)
+        }
+        run = client.actor("clockworks/free-tiktok-scraper").call(run_input=run_input)
+        dataset_items = client.dataset(run["defaultDatasetId"]).list_items().items
+        
+        for item in dataset_items:
+            results.append({
+                "Platform": "TikTok",
+                "Author": item.get("authorMeta", {}).get("name") or item.get("author", "N/A"),
+                "Content": item.get("text") or item.get("desc") or "",
+                "Likes": item.get("diggCount") or item.get("likesCount", 0),
+                "Comments": item.get("commentCount", 0),
+                "Shares/Views": item.get("playCount") or item.get("shareCount", 0),
+                "Url": item.get("webVideoUrl") or item.get("videoUrl") or "",
+                "Timestamp": str(datetime.now())
+            })
+    except Exception as e:
+        st.warning(f"Kendala pada platform TikTok: {str(e)}")
+    return results
+
+
+def scrape_twitter(client, keyword, max_items):
+    results = []
+    try:
+        run_input = {
+            "searchTerms": [keyword],
+            "maxItems": int(max_items)
+        }
+        run = client.actor("apify/twitter-scraper").call(run_input=run_input)
+        dataset_items = client.dataset(run["defaultDatasetId"]).list_items().items
+        
+        for item in dataset_items:
+            results.append({
+                "Platform": "Twitter/X",
+                "Author": item.get("author", {}).get("userName") or "N/A",
+                "Content": item.get("full_text") or item.get("text") or "",
+                "Likes": item.get("likeCount", 0),
+                "Comments": item.get("replyCount", 0),
+                "Shares/Views": item.get("retweetCount", 0),
+                "Url": item.get("url") or "",
+                "Timestamp": item.get("createdAt") or str(datetime.now())
+            })
+    except Exception as e:
+        st.warning(f"Kendala pada platform Twitter/X: {str(e)}")
+    return results
+
+# ==========================================
+# 5. EKSEKUSI PENCARIAN & LAPORAN
+# ==========================================
+
+btn_analyze = st.button("🚀 ANALISA DATA RIIL & BUAT LAPORAN", use_container_width=True)
+
+if btn_analyze:
+    if not apify_token:
+        st.error("❌ Mohon masukkan Apify API Token pada sidebar atau tentukan di Streamlit Secrets!")
+    elif not platforms:
+        st.error("❌ Silakan pilih minimal satu platform media sosial!")
     else:
-        apify_client = get_apify_client()
-        df_raw_all = pd.DataFrame()
+        client = ApifyClient(apify_token)
+        all_data = []
 
-        with st.spinner("🕷️ Menarik data riil dari API Media Sosial via Apify..."):
-            for platform in medsos:
-                try:
-                    st.info(f"⏳ Mengambil data riil dari **{platform}**...")
-                    if platform == "Instagram":
-                        df_p = scrape_instagram(apify_client, kata_kunci, jumlah_post)
-                    elif platform == "TikTok":
-                        df_p = scrape_tiktok(apify_client, kata_kunci, jumlah_post)
-                    elif platform == "X (Twitter)":
-                        df_p = scrape_twitter(apify_client, kata_kunci, jumlah_post)
-                    elif platform == "Facebook":
-                        df_p = scrape_facebook(apify_client, kata_kunci, jumlah_post)
-                    else:
-                        df_p = pd.DataFrame()
+        status_box = st.status("🔍 Mengambil data riil dari media sosial...", expanded=True)
 
-                    if not df_p.empty:
-                        df_raw_all = pd.concat([df_raw_all, df_p], ignore_index=True)
-                except Exception as err:
-                    st.warning(f"⚠️ Kendala pada platform {platform}: {err}")
+        for p in platforms:
+            status_box.write(f"⏳ Mengambil data riil dari **{p}**...")
+            if p == "Instagram":
+                res = scrape_instagram(client, keyword, max_items)
+            elif p == "YouTube":
+                res = scrape_youtube(client, keyword, max_items)
+            elif p == "TikTok":
+                res = scrape_tiktok(client, keyword, max_items)
+            elif p == "Twitter/X":
+                res = scrape_twitter(client, keyword, max_items)
+            else:
+                res = []
+            
+            all_data.extend(res)
 
-        if df_raw_all.empty:
+        status_box.update(label="✅ Pengambilan data selesai!", state="complete", expanded=False)
+
+        if not all_data:
             st.error("❌ Tidak ada data riil yang ditemukan dari platform yang dipilih.")
         else:
-            # Filter Tanggal
-            df_raw_all["Tanggal_Obj"] = pd.to_datetime(df_raw_all["Tanggal Publish"], errors="coerce").dt.date
-            df_filtered = df_raw_all[(df_raw_all["Tanggal_Obj"] >= tgl_mulai) & (df_raw_all["Tanggal_Obj"] <= tgl_selesai)].copy()
-            
-            if df_filtered.empty:
-                st.warning("⚠️ Data ditarik tetapi tidak ada yang masuk dalam rentang tanggal filter. Menggunakan seluruh data hasil tarik.")
-                df_filtered = df_raw_all
-
-            with st.spinner("📊 Memproses 10 Tab Analisis Profesional & Membuat File Google Sheet Baru..."):
-                dict_analytic_sheets = generate_professional_analytics(
-                    df_filtered, kata_kunci, medsos, jumlah_post, rentang_waktu, tgl_mulai, tgl_selesai
-                )
-
-                # Nama File Baru
-                timestamp_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                clean_topic = kata_kunci.replace(" ", "_").replace("#", "").replace("@", "")
-                new_sheet_title = f"Analisis_Sosmed_{clean_topic}_{timestamp_str}"
-
-                # Buat File GSheet Baru di Google Drive
-                sheet_url = create_new_gsheet_file(
-                    new_sheet_title, FOLDER_ID, dict_analytic_sheets
-                )
-
-                # Simpan Hasil Ke Session State Agar Tampilan Tidak Hilang Saat Rerun
-                st.session_state.analytic_results = {
-                    "df_filtered": df_filtered,
-                    "dict_analytic_sheets": dict_analytic_sheets,
-                    "sheet_url": sheet_url,
-                    "new_sheet_title": new_sheet_title
-                }
+            df = pd.DataFrame(all_data)
+            st.session_state["scraped_data"] = df
+            st.success(f"🎉 Berhasil mengambil {len(df)} data postingan!")
 
 # ==========================================
-# 7. MENAMPILKAN DASHBOARD (JIKA ADA DATA)
+# 6. DISPLAY MULTI-TAB REPORT
 # ==========================================
-if st.session_state.analytic_results is not None:
-    res = st.session_state.analytic_results
-    df_filtered = res["df_filtered"]
-    dict_analytic_sheets = res["dict_analytic_sheets"]
-    sheet_url = res["sheet_url"]
-    new_sheet_title = res["new_sheet_title"]
 
-    st.success(f"✅ Analisa Selesai! Berhasil menarik {len(df_filtered)} data riil dan menyimpan file laporan baru.")
-
-    # Tampilkan Link & Download
-    c_link, c_down = st.columns(2)
-    with c_link:
-        st.markdown(f"🔗 **[Buka File Google Sheet Hasil Analisis]({sheet_url})**")
-    with c_down:
-        excel_bytes = convert_dict_to_excel(dict_analytic_sheets)
-        st.download_button(
-            label="💾 Download File Excel 10-Tab (.xlsx)",
-            data=excel_bytes,
-            file_name=f"{new_sheet_title}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
+if "scraped_data" in st.session_state:
+    df = st.session_state["scraped_data"]
 
     st.markdown("---")
+    tab1, tab2, tab3 = st.tabs(["📊 METRIK & RINGKASAN", "📝 DETAIL POSTINGAN", "📥 UNDUH LAPORAN"])
 
-    # Visualisasi Dashboard Streamlit
-    st.subheader("📈 Ringkasan Eksekutif Hasil Analisis")
-    
-    m1, m2, m3, m4 = st.columns(4)
-    total_eng = df_filtered["Total Interaksi"].sum()
-    m1.metric("Total Posts Ditarik", len(df_filtered))
-    m2.metric("Total Engagement", f"{total_eng:,}")
-    m3.metric("Total Likes", f"{df_filtered['Jumlah Likes'].sum():,}")
-    m4.metric("Total Shares/Retweets", f"{df_filtered['Jumlah Shares'].sum():,}")
+    with tab1:
+        st.subheader("Ringkasan Performa Per Platform")
+        
+        # Summary Metrics
+        col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+        col_m1.metric("Total Postingan", len(df))
+        col_m2.metric("Total Likes", f"{df['Likes'].sum():,}")
+        col_m3.metric("Total Komentar", f"{df['Comments'].sum():,}")
+        col_m4.metric("Total Views/Shares", f"{df['Shares/Views'].sum():,}")
 
-    # Tab Preview Tampilan Streamlit
-    st_tab1, st_tab2, st_tab3, st_tab4, st_tab5 = st.tabs([
-        "📊 Tren Harian", "⏰ Matriks 24 Jam", "🏆 Top Posts", "📱 Format Konten", "📋 Raw Data"
-    ])
+        st.markdown("### Visualisasi Interaksi")
+        col_chart1, col_chart2 = st.columns(2)
 
-    with st_tab1:
-        st.subheader("Tren Interaksi Harian")
-        st.bar_chart(dict_analytic_sheets["02_Tren_Harian"].set_index("Tanggal Publish")["Total_Interaksi"])
+        with col_chart1:
+            fig_likes = px.bar(
+                df, x="Platform", y="Likes", color="Platform",
+                title="Total Likes Per Platform", text_auto=True
+            )
+            st.plotly_chart(fig_likes, use_container_width=True)
 
-    with st_tab2:
-        st.subheader("Waktu Terbaik Posting (Prime Time)")
-        st.line_chart(dict_analytic_sheets["03_Matriks_24Jam"].set_index("Jam (00-23)")["Total_Interaksi"])
+        with col_chart2:
+            fig_comments = px.pie(
+                df, names="Platform", values="Comments",
+                title="Distribusi Komentar Per Platform"
+            )
+            st.plotly_chart(fig_comments, use_container_width=True)
 
-    with st_tab3:
-        st.subheader("5 Postingan Terpopuler")
-        st.dataframe(dict_analytic_sheets["04_Top_Engagement"].head(5), use_container_width=True)
+    with tab2:
+        st.subheader("Detail Posting Media Sosial")
+        st.dataframe(
+            df[["Platform", "Author", "Content", "Likes", "Comments", "Shares/Views", "Url"]],
+            use_container_width=True
+        )
 
-    with st_tab4:
-        st.subheader("Performa Berdasarkan Format Konten")
-        st.dataframe(dict_analytic_sheets["09_Format_Konten"], use_container_width=True)
+    with tab3:
+        st.subheader("Unduh Laporan Data")
+        
+        # Download CSV
+        csv_buffer = df.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="📄 Unduh Data sebagai CSV",
+            data=csv_buffer,
+            file_name=f"social_media_report_{keyword}.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
 
-    with st_tab5:
-        st.subheader("Data Mentah Hasil Scraping")
-        st.dataframe(dict_analytic_sheets["10_Data_Mentah"], use_container_width=True)
+        # Download Excel
+        excel_buffer = io.BytesIO()
+        with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+            df.to_excel(writer, sheet_name='Data Postingan', index=False)
+        excel_data = excel_buffer.getvalue()
+
+        st.download_button(
+            label="📊 Unduh Data sebagai Excel (.xlsx)",
+            data=excel_data,
+            file_name=f"social_media_report_{keyword}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
+        )
